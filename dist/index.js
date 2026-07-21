@@ -305,6 +305,7 @@ var AnthropicProvider = class {
   }
   model;
   name = "anthropic";
+  usage = { calls: 0, inputTokens: 0, outputTokens: 0 };
   client;
   async generate(system, user, schema) {
     const stream = this.client.messages.stream({
@@ -318,6 +319,9 @@ var AnthropicProvider = class {
       messages: [{ role: "user", content: user }]
     });
     const message = await stream.finalMessage();
+    this.usage.calls++;
+    this.usage.inputTokens += message.usage.input_tokens;
+    this.usage.outputTokens += message.usage.output_tokens;
     if (message.stop_reason === "refusal") {
       throw new Error("Anthropic declined this request (stop_reason: refusal).");
     }
@@ -340,6 +344,7 @@ var OpenAIProvider = class {
   }
   model;
   name = "openai";
+  usage = { calls: 0, inputTokens: 0, outputTokens: 0 };
   client;
   async generate(system, user, schema) {
     const completion = await this.client.chat.completions.create({
@@ -355,6 +360,9 @@ var OpenAIProvider = class {
         json_schema: { name: "output", strict: false, schema }
       }
     });
+    this.usage.calls++;
+    this.usage.inputTokens += completion.usage?.prompt_tokens ?? 0;
+    this.usage.outputTokens += completion.usage?.completion_tokens ?? 0;
     const content = completion.choices[0]?.message.content;
     if (!content) throw new Error("OpenAI response contained no content.");
     return JSON.parse(content);
@@ -371,6 +379,7 @@ var GeminiProvider = class {
   }
   model;
   name = "gemini";
+  usage = { calls: 0, inputTokens: 0, outputTokens: 0 };
   client;
   async generate(system, user, schema) {
     const response = await this.client.models.generateContent({
@@ -382,6 +391,9 @@ var GeminiProvider = class {
         responseJsonSchema: schema
       }
     });
+    this.usage.calls++;
+    this.usage.inputTokens += response.usageMetadata?.promptTokenCount ?? 0;
+    this.usage.outputTokens += response.usageMetadata?.candidatesTokenCount ?? 0;
     const text = response.text;
     if (!text) throw new Error("Gemini response contained no text.");
     return JSON.parse(text);

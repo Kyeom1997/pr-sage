@@ -1,10 +1,11 @@
 import OpenAI from "openai";
-import type { Provider } from "../types.js";
+import type { Provider, ProviderUsage } from "../types.js";
 
 export const DEFAULT_OPENAI_MODEL = "gpt-5";
 
 export class OpenAIProvider implements Provider {
   readonly name = "openai" as const;
+  readonly usage: ProviderUsage = { calls: 0, inputTokens: 0, outputTokens: 0 };
   private readonly client: OpenAI;
 
   constructor(readonly model: string = DEFAULT_OPENAI_MODEL) {
@@ -25,6 +26,9 @@ export class OpenAIProvider implements Provider {
         json_schema: { name: "output", strict: false, schema },
       },
     });
+    this.usage.calls++;
+    this.usage.inputTokens += completion.usage?.prompt_tokens ?? 0;
+    this.usage.outputTokens += completion.usage?.completion_tokens ?? 0;
     const content = completion.choices[0]?.message.content;
     if (!content) throw new Error("OpenAI response contained no content.");
     return JSON.parse(content) as unknown;
