@@ -64,4 +64,4 @@ runs:
         if [ -n "${{ inputs.context }}" ]; then ARGS+=(--context "${{ inputs.context }}"); fi
         if [ -n "${{ inputs.event }}" ]; then ARGS+=(--event "${{ inputs.event }}"); fi
         if [ -n "${{ inputs.extra-args }}" ]; then read -ra EXTRA <<< "${{ inputs.extra-args }}"; ARGS+=("${EXTRA[@]}"); fi
-        npx --yes pr-sage@0.2.0 "${ARGS[@]}"
+        npx --yes pr-sage@0.3.0 "${ARGS[@]}"
