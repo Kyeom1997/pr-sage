@@ -38,9 +38,16 @@ interface PullRequestInfo {
     files: DiffFile[];
 }
 type ProviderName = "anthropic" | "openai" | "gemini";
+interface ProviderUsage {
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+}
 interface Provider {
     readonly name: ProviderName;
     readonly model: string;
+    /** Cumulative token usage across generate() calls, when the SDK reports it. */
+    readonly usage?: ProviderUsage;
     /**
      * One structured-output call: system + user prompt constrained to a JSON
      * schema. Returns raw parsed JSON; callers validate the shape.

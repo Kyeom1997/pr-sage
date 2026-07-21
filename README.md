@@ -1,8 +1,17 @@
 # pr-sage
 
-AI-powered GitHub pull request reviewer. Fetches a PR's diff, reviews it with an LLM, and posts **inline comments** on the exact changed lines plus a **summary review** — as a CLI or a GitHub Action.
+**An AI PR reviewer built to eliminate review noise — not add to it.**
 
-Supports **Claude (Anthropic)**, **OpenAI**, and **Gemini**.
+Most AI reviewers re-review the whole PR on every push and repeat themselves until the team mutes them. pr-sage is designed around the opposite goal: say each thing once, follow your team's rules, and stay silent when there is nothing new to say.
+
+- 🔇 **Zero duplicate comments.** Findings carry content fingerprints — a line shift won't make the same comment appear twice, and re-runs post nothing when nothing changed.
+- ⏩ **Incremental by default.** After the first review, only the commits you pushed since get reviewed. Less noise, fewer tokens.
+- 📏 **Your rules, not generic advice.** `.pr-sage.json` instructions plus automatic `CLAUDE.md`/`CONTRIBUTING.md` injection make reviews follow team conventions.
+- 🚦 **A quality gate, not just commentary.** `--fail-on critical` blocks merges; `--event auto` approves clean PRs and requests changes on real problems.
+- 🖥️ **Reviews before the PR exists.** `pr-sage local` reviews your `git diff` pre-push — no server, no PR, no GitHub token.
+- 🔐 **Your keys, your data path.** No server, nothing stored; code goes only to the provider you choose — **Claude, OpenAI, or Gemini** ([SECURITY.md](SECURITY.md)).
+
+Ships as a **CLI**, a **GitHub Action**, and a **TypeScript library**.
 
 ## Quick start (CLI)
 
@@ -100,6 +109,14 @@ jobs:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           locale: Korean
           fail-on: critical   # optional: block merge on critical findings
+```
+
+## Measuring it
+
+`scripts/bench.mjs` runs pr-sage (dry, nothing posted) over recent merged PRs of any public repo and records findings, severity mix, latency, and token usage, plus a labeling sheet for computing the valid-review rate:
+
+```bash
+node scripts/bench.mjs --repos fastify/fastify --per-repo 5 --provider gemini
 ```
 
 ## How it works
