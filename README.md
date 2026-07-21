@@ -119,6 +119,17 @@ jobs:
 node scripts/bench.mjs --repos fastify/fastify --per-repo 5 --provider gemini
 ```
 
+### Measured (2026-07, 28 PRs)
+
+28 recently merged PRs across **fastify, hono, GitHub CLI, and Vite** (`gemini-flash-lite`, zero run failures):
+
+- **25/28 (89%) produced zero comments** — quiet on code that had already passed human review. That silence is the point: no noise on clean diffs.
+- The other 3 PRs got 7 findings. Verifying each claim against the actual diff: **3/7 valid overall, 2/3 for `warning` severity** — the noise concentrated in the `suggestion` tier.
+- Re-running those PRs with **`--verify`** kept exactly the 2 diff-confirmed-valid findings (a real GPG-signing regression question in a deployment workflow) and rejected every invalid one.
+- **Median 2.3 s and ~3.5 k input tokens per PR** (≈ $0.01 for all 28 PRs at flash-lite list pricing).
+
+Raw results and the per-finding verification notes live in [`bench-results/`](bench-results/). Caveats: small sample, and merged-PR sampling measures *noise*, not *recall* — a detection benchmark (reviewing pre-review commits of PRs that later got human fixes) is future work.
+
 ## How it works
 
 1. Fetches the PR metadata and per-file patches from the GitHub API.
