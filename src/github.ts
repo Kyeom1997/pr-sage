@@ -1,17 +1,34 @@
-import type { DiffFile, Finding, PullRequestInfo } from "./types.js";
+import type { DiffFile, Finding, PullRequestInfo, ReviewEvent } from "./types.js";
 import { commentableLines } from "./diff.js";
 
-const API = "https://api.github.com";
+/** Hidden marker identifying comments posted by pr-sage (used for dedup). */
+export const PR_SAGE_MARKER = "<!-- pr-sage -->";
+
+/** Marker recording which head commit a summary review covered. */
+export function shaMarker(sha: string): string {
+  return `<!-- pr-sage sha:${sha} -->`;
+}
+
+const SHA_MARKER_RE = /<!-- pr-sage sha:([0-9a-f]{6,40}) -->/;
 
 export class GitHubClient {
+  private readonly baseUrl: string;
+
   constructor(
     private readonly token: string,
     private readonly owner: string,
     private readonly repo: string,
-  ) {}
+    baseUrl?: string,
+  ) {
+    // GitHub Actions sets GITHUB_API_URL automatically, including on GHES.
+    this.baseUrl = (baseUrl ?? process.env.GITHUB_API_URL ?? "https://api.github.com").replace(
+      /\/$/,
+      "",
+    );
+  }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${API}${path}`, {
+    const res = await fetch(`${this.baseUrl}${path}`, {
       ...init,
       headers: {
         Accept: "application/vnd.github+json",
@@ -64,6 +81,21 @@ export class GitHubClient {
     };
   }
 
+  /** Files changed between two commits (for incremental review). */
+  async compareFiles(baseSha: string, headSha: string): Promise<DiffFile[]> {
+    const cmp = await this.request<{
+      files?: Array<{ filename: string; status: string; patch?: string }>;
+    }>(`/repos/${this.owner}/${this.repo}/compare/${baseSha}...${headSha}`);
+    return (cmp.files ?? [])
+      .filter((f) => f.patch)
+      .map((f) => ({
+        path: f.filename,
+        status: f.status,
+        patch: f.patch!,
+        commentableLines: commentableLines(f.patch!),
+      }));
+  }
+
   /** Fetch a file's content at a given ref. Returns null for binary/oversized/missing files. */
   async fetchFileContent(path: string, ref: string): Promise<string | null> {
     try {
@@ -77,13 +109,33 @@ export class GitHubClient {
     }
   }
 
+  /** Fetch repo guideline docs (CLAUDE.md, CONTRIBUTING.md) to inject as review context. */
+  async fetchRepoGuidelines(ref: string): Promise<string | null> {
+    const candidates = ["CLAUDE.md", "CONTRIBUTING.md", ".github/CONTRIBUTING.md"];
+    const parts: string[] = [];
+    const seen = new Set<string>();
+    for (const path of candidates) {
+      const basename = path.split("/").pop()!;
+      if (seen.has(basename)) continue;
+      const content = await this.fetchFileContent(path, ref);
+      if (content) {
+        seen.add(basename);
+        parts.push(`--- ${path} ---\n${content.slice(0, 6000)}`);
+      }
+    }
+    return parts.length > 0 ? parts.join("\n\n") : null;
+  }
+
   /**
    * Locate previous pr-sage activity on this PR: inline-comment locations
-   * (for dedup) and whether any pr-sage summary review exists.
+   * (for dedup), whether any pr-sage summary review exists, and the head
+   * commit the most recent one covered (for incremental review).
    */
-  async fetchPrSageHistory(
-    prNumber: number,
-  ): Promise<{ commentedLocations: Set<string>; hasReview: boolean }> {
+  async fetchPrSageHistory(prNumber: number): Promise<{
+    commentedLocations: Set<string>;
+    hasReview: boolean;
+    lastReviewedSha: string | null;
+  }> {
     const commentedLocations = new Set<string>();
     for (let page = 1; ; page++) {
       const batch = await this.request<
@@ -98,40 +150,63 @@ export class GitHubClient {
     }
 
     let hasReview = false;
+    let lastReviewedSha: string | null = null;
     for (let page = 1; ; page++) {
       const batch = await this.request<Array<{ body: string | null }>>(
         `/repos/${this.owner}/${this.repo}/pulls/${prNumber}/reviews?per_page=100&page=${page}`,
       );
-      if (batch.some((r) => r.body?.includes(PR_SAGE_MARKER))) hasReview = true;
+      for (const review of batch) {
+        if (!review.body?.includes("<!-- pr-sage")) continue;
+        hasReview = true;
+        const sha = review.body.match(SHA_MARKER_RE)?.[1];
+        if (sha) lastReviewedSha = sha; // reviews are chronological; last wins
+      }
       if (batch.length < 100) break;
     }
 
-    return { commentedLocations, hasReview };
+    return { commentedLocations, hasReview, lastReviewedSha };
   }
 
-  async postReview(prNumber: number, summary: string, findings: Finding[]): Promise<string> {
-    const review = await this.request<{ html_url: string }>(
-      `/repos/${this.owner}/${this.repo}/pulls/${prNumber}/reviews`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          event: "COMMENT",
-          body: summary,
-          comments: findings.map((f) => ({
-            path: f.path,
-            line: f.line,
-            side: "RIGHT",
-            body: formatComment(f),
-          })),
-        }),
-      },
-    );
-    return review.html_url;
+  async postReview(
+    prNumber: number,
+    summary: string,
+    findings: Finding[],
+    event: ReviewEvent = "COMMENT",
+  ): Promise<{ url: string; event: ReviewEvent }> {
+    const post = (ev: ReviewEvent) =>
+      this.request<{ html_url: string }>(
+        `/repos/${this.owner}/${this.repo}/pulls/${prNumber}/reviews`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            event: ev,
+            body: summary,
+            comments: findings.map((f) => ({
+              path: f.path,
+              body: formatComment(f),
+              side: "RIGHT",
+              ...(f.endLine !== undefined && f.endLine > f.line
+                ? { start_line: f.line, start_side: "RIGHT", line: f.endLine }
+                : { line: f.line }),
+            })),
+          }),
+        },
+      );
+
+    try {
+      const review = await post(event);
+      return { url: review.html_url, event };
+    } catch (error) {
+      // APPROVE/REQUEST_CHANGES can be rejected (e.g. reviewing your own PR);
+      // fall back to a plain comment review rather than losing the review.
+      if (event !== "COMMENT" && error instanceof Error && error.message.includes("422")) {
+        const review = await post("COMMENT");
+        return { url: review.html_url, event: "COMMENT" };
+      }
+      throw error;
+    }
   }
 }
-
-/** Hidden marker identifying comments posted by pr-sage (used for dedup). */
-export const PR_SAGE_MARKER = "<!-- pr-sage -->";
 
 const SEVERITY_BADGE: Record<Finding["severity"], string> = {
   critical: "🔴 **Critical**",

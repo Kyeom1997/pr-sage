@@ -26,6 +26,12 @@ inputs:
   context:
     description: "patch (default) or full — send full file contents for better accuracy"
     default: ""
+  event:
+    description: "comment (default) or auto — auto approves clean PRs and requests changes on critical findings"
+    default: ""
+  extra-args:
+    description: "Extra pr-sage CLI flags, e.g. \"--verify --output sarif\""
+    default: ""
   github-token:
     description: "Token used to read the PR and post the review"
     default: ${{ github.token }}
@@ -56,4 +62,6 @@ runs:
         if [ -n "${{ inputs.fail-on }}" ]; then ARGS+=(--fail-on "${{ inputs.fail-on }}"); fi
         if [ -n "${{ inputs.min-severity }}" ]; then ARGS+=(--min-severity "${{ inputs.min-severity }}"); fi
         if [ -n "${{ inputs.context }}" ]; then ARGS+=(--context "${{ inputs.context }}"); fi
+        if [ -n "${{ inputs.event }}" ]; then ARGS+=(--event "${{ inputs.event }}"); fi
+        if [ -n "${{ inputs.extra-args }}" ]; then read -ra EXTRA <<< "${{ inputs.extra-args }}"; ARGS+=("${EXTRA[@]}"); fi
         npx --yes pr-sage@0.2.0 "${ARGS[@]}"

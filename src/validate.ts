@@ -4,6 +4,7 @@ import { SEVERITIES, type Finding, type ReviewResult } from "./types.js";
 const findingSchema = z.object({
   path: z.string().min(1),
   line: z.number().int().positive(),
+  endLine: z.number().int().positive().optional(),
   severity: z.enum(SEVERITIES),
   title: z.string().min(1),
   body: z.string().min(1),
@@ -14,6 +15,26 @@ const resultSchema = z.object({
   summary: z.string(),
   findings: z.array(z.unknown()),
 });
+
+const verdictsSchema = z.object({
+  verdicts: z.array(
+    z.object({ index: z.number().int().nonnegative(), confirmed: z.boolean() }),
+  ),
+});
+
+const summarySchema = z.object({ summary: z.string() });
+
+export function parseVerdicts(raw: unknown): Array<{ index: number; confirmed: boolean }> {
+  const parsed = verdictsSchema.safeParse(raw);
+  if (!parsed.success) throw new Error("Model returned malformed verification verdicts.");
+  return parsed.data.verdicts;
+}
+
+export function parseSummary(raw: unknown): string {
+  const parsed = summarySchema.safeParse(raw);
+  if (!parsed.success) throw new Error("Model returned malformed summary output.");
+  return parsed.data.summary;
+}
 
 /**
  * Validate raw model output at runtime. A malformed overall shape throws;

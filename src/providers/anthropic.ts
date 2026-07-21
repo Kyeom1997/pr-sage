@@ -1,6 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { Provider, ReviewRequest } from "../types.js";
-import { REVIEW_SCHEMA, systemPrompt, userPrompt } from "../prompt.js";
+import type { Provider } from "../types.js";
 
 export const DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8";
 
@@ -12,24 +11,24 @@ export class AnthropicProvider implements Provider {
     this.client = new Anthropic();
   }
 
-  async review(req: ReviewRequest): Promise<unknown> {
+  async generate(system: string, user: string, schema: Record<string, unknown>): Promise<unknown> {
     const stream = this.client.messages.stream({
       model: this.model,
       max_tokens: 64000,
       thinking: { type: "adaptive" },
-      system: systemPrompt(req.locale, req.instructions),
+      system,
       output_config: {
-        format: { type: "json_schema", schema: REVIEW_SCHEMA },
+        format: { type: "json_schema", schema },
       },
-      messages: [{ role: "user", content: userPrompt(req) }],
+      messages: [{ role: "user", content: user }],
     });
 
     const message = await stream.finalMessage();
     if (message.stop_reason === "refusal") {
-      throw new Error("Anthropic declined to review this diff (stop_reason: refusal).");
+      throw new Error("Anthropic declined this request (stop_reason: refusal).");
     }
     if (message.stop_reason === "max_tokens") {
-      throw new Error("Review output was truncated (max_tokens reached). Try fewer files per batch.");
+      throw new Error("Output was truncated (max_tokens reached). Try fewer files per batch.");
     }
     const text = message.content.find((b) => b.type === "text");
     if (!text) throw new Error("Anthropic response contained no text block.");

@@ -46,6 +46,7 @@
     "dev": "tsup --watch",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
+    "version": "node scripts/sync-version.mjs && git add action.yml",
     "prepublishOnly": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {

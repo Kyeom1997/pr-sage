@@ -1,6 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import type { Provider, ReviewRequest } from "../types.js";
-import { REVIEW_SCHEMA, systemPrompt, userPrompt } from "../prompt.js";
+import type { Provider } from "../types.js";
 
 export const DEFAULT_GEMINI_MODEL = "gemini-flash-latest";
 
@@ -12,14 +11,14 @@ export class GeminiProvider implements Provider {
     this.client = new GoogleGenAI({});
   }
 
-  async review(req: ReviewRequest): Promise<unknown> {
+  async generate(system: string, user: string, schema: Record<string, unknown>): Promise<unknown> {
     const response = await this.client.models.generateContent({
       model: this.model,
-      contents: userPrompt(req),
+      contents: user,
       config: {
-        systemInstruction: systemPrompt(req.locale, req.instructions),
+        systemInstruction: system,
         responseMimeType: "application/json",
-        responseJsonSchema: REVIEW_SCHEMA,
+        responseJsonSchema: schema,
       },
     });
     const text = response.text;

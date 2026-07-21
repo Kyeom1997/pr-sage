@@ -9,8 +9,10 @@ export function severityAtLeast(severity: Severity, threshold: Severity): boolea
 export interface Finding {
   /** Repo-relative path of the file the finding is in. */
   path: string;
-  /** 1-indexed line number in the NEW version of the file. */
+  /** 1-indexed line number in the NEW version of the file (first line of the range). */
   line: number;
+  /** Optional last line of a multi-line finding; the comment spans line..endLine. */
+  endLine?: number;
   severity: Severity;
   title: string;
   /** Full explanation, written as a review comment (markdown). */
@@ -43,19 +45,14 @@ export interface PullRequestInfo {
 
 export type ProviderName = "anthropic" | "openai" | "gemini";
 
-export interface ReviewRequest {
-  prTitle: string;
-  prBody: string;
-  /** Annotated patches ready to embed in the prompt. */
-  filesText: string;
-  locale: string;
-  /** Project-specific review guidelines appended to the system prompt. */
-  instructions?: string;
-}
-
 export interface Provider {
   readonly name: ProviderName;
   readonly model: string;
-  /** Returns raw parsed JSON; callers validate with parseReviewResult. */
-  review(request: ReviewRequest): Promise<unknown>;
+  /**
+   * One structured-output call: system + user prompt constrained to a JSON
+   * schema. Returns raw parsed JSON; callers validate the shape.
+   */
+  generate(system: string, user: string, schema: Record<string, unknown>): Promise<unknown>;
 }
+
+export type ReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";

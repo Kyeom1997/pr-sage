@@ -3,16 +3,34 @@ import type {
   DiffFile,
   Finding,
   Provider,
-  PullRequestInfo,
   ReviewResult,
   Severity,
 } from "./types.js";
 import { severityAtLeast } from "./types.js";
-import { renderFiles } from "./prompt.js";
+import {
+  REVIEW_SCHEMA,
+  SUMMARY_SCHEMA,
+  VERIFY_SCHEMA,
+  consolidateSystemPrompt,
+  renderFiles,
+  systemPrompt,
+  userPrompt,
+  verifySystemPrompt,
+  verifyUserPrompt,
+} from "./prompt.js";
 import { validateFindings } from "./diff.js";
-import { parseReviewResult } from "./validate.js";
+import { parseReviewResult, parseSummary, parseVerdicts } from "./validate.js";
 import { withRetry } from "./retry.js";
-import { PR_SAGE_MARKER } from "./github.js";
+import { PR_SAGE_MARKER, shaMarker } from "./github.js";
+
+export interface ReviewTarget {
+  title: string;
+  body: string;
+  /** Files to review (may be an incremental subset of the full diff). */
+  files: DiffFile[];
+  /** Head commit recorded in the summary marker; empty for local reviews. */
+  headSha: string;
+}
 
 export interface ReviewOptions {
   locale: string;
@@ -27,6 +45,13 @@ export interface ReviewOptions {
   minSeverity?: Severity;
   /** When set, fetches full file content (new version) for extra context. */
   fetchContent?: (path: string) => Promise<string | null>;
+  /** Second model pass that rejects unconfirmed findings (halves false positives, doubles cost). */
+  verify?: boolean;
+  /**
+   * Files whose diff lines findings must anchor to (defaults to target.files).
+   * Used by incremental review: review a subset, anchor against the full PR diff.
+   */
+  anchorFiles?: DiffFile[];
 }
 
 export const DEFAULT_EXCLUDES = [
@@ -74,14 +99,15 @@ export function batchFiles(files: DiffFile[], budget: number): DiffFile[][] {
 }
 
 /**
- * GitHub suggestion blocks replace exactly the anchored line, so a multi-line
- * suggestion would corrupt the file if committed. Demote those to a plain
- * code block in the comment body.
+ * A single-line GitHub suggestion replaces exactly the anchored line, so a
+ * multi-line suggestion without a matching range would corrupt the file if
+ * committed. Range findings (endLine set) may carry multi-line suggestions.
  */
 export function sanitizeFindings(findings: Finding[]): Finding[] {
   return findings.map((f) => {
     if (!f.suggestion) return f;
     const suggestion = f.suggestion.replace(/\n+$/, "");
+    if (f.endLine !== undefined && f.endLine > f.line) return { ...f, suggestion };
     if (!suggestion.includes("\n")) return { ...f, suggestion };
     const { suggestion: _dropped, ...rest } = f;
     return { ...rest, body: `${f.body}\n\n\`\`\`\n${suggestion}\n\`\`\`` };
@@ -90,14 +116,14 @@ export function sanitizeFindings(findings: Finding[]): Finding[] {
 
 export async function runReview(
   provider: Provider,
-  pr: PullRequestInfo,
+  target: ReviewTarget,
   options: ReviewOptions,
 ): Promise<{ result: ReviewResult; dropped: Finding[] }> {
-  const files = filterFiles(pr.files, options.exclude);
+  const files = filterFiles(target.files, options.exclude);
   if (files.length === 0) {
     return {
       result: {
-        summary: `No reviewable files in this pull request.\n\n${PR_SAGE_MARKER}`,
+        summary: `No reviewable files in this change.\n\n${PR_SAGE_MARKER}`,
         findings: [],
       },
       dropped: [],
@@ -109,8 +135,10 @@ export async function runReview(
     `Reviewing ${files.length} file(s) in ${batches.length} batch(es) with ${provider.name}:${provider.model}`,
   );
 
+  const system = systemPrompt(options.locale, options.instructions);
   const summaries: string[] = [];
   const findings: Finding[] = [];
+
   for (const [i, batch] of batches.entries()) {
     if (batches.length > 1) options.log(`Batch ${i + 1}/${batches.length}: ${batch.length} file(s)`);
 
@@ -124,41 +152,100 @@ export async function runReview(
       }
     }
 
+    const filesText = renderFiles(batch, contents);
     const raw = await withRetry(
-      () =>
-        provider.review({
-          prTitle: pr.title,
-          prBody: pr.body,
-          filesText: renderFiles(batch, contents),
-          locale: options.locale,
-          instructions: options.instructions,
-        }),
+      () => provider.generate(system, userPrompt(target.title, target.body, filesText), REVIEW_SCHEMA),
       { log: options.log },
     );
     const result = parseReviewResult(raw, options.log);
+
+    let batchFindings = result.findings;
+    if (options.verify && batchFindings.length > 0) {
+      batchFindings = await verifyBatch(provider, batchFindings, filesText, options.log);
+    }
+
     summaries.push(result.summary);
-    findings.push(...result.findings);
+    findings.push(...batchFindings);
   }
 
-  const { valid, dropped } = validateFindings(sanitizeFindings(findings), files);
+  const summaryBody = await consolidateSummaries(provider, summaries, options);
+
+  const { valid, dropped } = validateFindings(findings, options.anchorFiles ?? files);
   if (dropped.length > 0) {
     options.log(`Dropped ${dropped.length} finding(s) referencing lines outside the diff.`);
   }
 
-  let kept = valid;
+  let kept = sanitizeFindings(valid);
   if (options.minSeverity) {
-    kept = valid.filter((f) => severityAtLeast(f.severity, options.minSeverity!));
-    const filtered = valid.length - kept.length;
-    if (filtered > 0) options.log(`Filtered ${filtered} finding(s) below ${options.minSeverity}.`);
+    const before = kept.length;
+    kept = kept.filter((f) => severityAtLeast(f.severity, options.minSeverity!));
+    if (before > kept.length) {
+      options.log(`Filtered ${before - kept.length} finding(s) below ${options.minSeverity}.`);
+    }
   }
 
   return {
-    result: { summary: buildSummary(summaries, kept, provider), findings: kept },
+    result: { summary: buildSummary(summaryBody, kept, provider, target.headSha), findings: kept },
     dropped,
   };
 }
 
-function buildSummary(summaries: string[], findings: Finding[], provider: Provider): string {
+async function verifyBatch(
+  provider: Provider,
+  findings: Finding[],
+  filesText: string,
+  log: (message: string) => void,
+): Promise<Finding[]> {
+  try {
+    const raw = await withRetry(
+      () => provider.generate(verifySystemPrompt(), verifyUserPrompt(findings, filesText), VERIFY_SCHEMA),
+      { log },
+    );
+    const confirmed = new Set(
+      parseVerdicts(raw)
+        .filter((v) => v.confirmed)
+        .map((v) => v.index),
+    );
+    const kept = findings.filter((_, i) => confirmed.has(i));
+    if (kept.length < findings.length) {
+      log(`Verification rejected ${findings.length - kept.length} of ${findings.length} finding(s).`);
+    }
+    return kept;
+  } catch (error) {
+    log(`Verification pass failed (${(error as Error).message}); keeping all findings.`);
+    return findings;
+  }
+}
+
+async function consolidateSummaries(
+  provider: Provider,
+  summaries: string[],
+  options: ReviewOptions,
+): Promise<string> {
+  if (summaries.length <= 1) return summaries[0] ?? "";
+  try {
+    const raw = await withRetry(
+      () =>
+        provider.generate(
+          consolidateSystemPrompt(options.locale),
+          summaries.map((s, i) => `## Partial summary ${i + 1}\n\n${s}`).join("\n\n"),
+          SUMMARY_SCHEMA,
+        ),
+      { log: options.log },
+    );
+    return parseSummary(raw);
+  } catch (error) {
+    options.log(`Summary consolidation failed (${(error as Error).message}); joining batch summaries.`);
+    return summaries.join("\n\n");
+  }
+}
+
+function buildSummary(
+  summaryBody: string,
+  findings: Finding[],
+  provider: Provider,
+  headSha: string,
+): string {
   const counts = new Map<string, number>();
   for (const f of findings) counts.set(f.severity, (counts.get(f.severity) ?? 0) + 1);
   const countLine =
@@ -172,12 +259,12 @@ function buildSummary(summaries: string[], findings: Finding[], provider: Provid
   return [
     "## 🔎 pr-sage review",
     "",
-    summaries.join("\n\n"),
+    summaryBody,
     "",
     `**Findings:** ${countLine}`,
     "",
     `<sub>Generated by [pr-sage](https://www.npmjs.com/package/pr-sage) using ${provider.name}:${provider.model}</sub>`,
     "",
-    PR_SAGE_MARKER,
+    headSha ? `${PR_SAGE_MARKER}\n${shaMarker(headSha)}` : PR_SAGE_MARKER,
   ].join("\n");
 }

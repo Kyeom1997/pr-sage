@@ -20,6 +20,18 @@ const configSchema = z.strictObject({
   context: z.enum(["patch", "full"]).optional(),
   /** Skip findings already posted by a previous pr-sage review (default true). */
   dedupe: z.boolean().optional(),
+  /** Review only commits pushed since the last pr-sage review (default true). */
+  incremental: z.boolean().optional(),
+  /** "comment" (default) or "auto" — approve / request changes based on findings. */
+  event: z.enum(["comment", "auto"]).optional(),
+  /** Second model pass that rejects unconfirmed findings (doubles cost). */
+  verify: z.boolean().optional(),
+  /** "text" (default), "json", or "sarif" stdout format. */
+  output: z.enum(["text", "json", "sarif"]).optional(),
+  /** Inject repo guideline docs (CLAUDE.md, CONTRIBUTING.md) into the prompt (default true). */
+  repoContext: z.boolean().optional(),
+  /** GitHub API base URL for GitHub Enterprise (default: $GITHUB_API_URL or api.github.com). */
+  githubApiUrl: z.string().optional(),
 });
 
 export type PrSageConfig = z.infer<typeof configSchema>;

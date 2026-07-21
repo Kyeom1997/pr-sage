@@ -54,9 +54,13 @@ export function annotatePatch(patch: string): string {
   return out.join("\n");
 }
 
+const MAX_RANGE_LINES = 50;
+
 /**
  * Drop findings that reference files or lines not present in the diff —
  * GitHub rejects the whole review if any comment targets an invalid line.
+ * Multi-line ranges whose span isn't fully in the diff are downgraded to
+ * single-line findings rather than dropped.
  */
 export function validateFindings(
   findings: Finding[],
@@ -67,11 +71,24 @@ export function validateFindings(
   const dropped: Finding[] = [];
   for (const finding of findings) {
     const file = byPath.get(finding.path);
-    if (file && file.commentableLines.has(finding.line)) {
-      valid.push(finding);
-    } else {
+    if (!file || !file.commentableLines.has(finding.line)) {
       dropped.push(finding);
+      continue;
+    }
+    if (finding.endLine !== undefined && !isValidRange(finding, file)) {
+      valid.push({ ...finding, endLine: undefined });
+    } else {
+      valid.push(finding);
     }
   }
   return { valid, dropped };
+}
+
+function isValidRange(finding: Finding, file: DiffFile): boolean {
+  const end = finding.endLine!;
+  if (end <= finding.line || end - finding.line > MAX_RANGE_LINES) return false;
+  for (let n = finding.line; n <= end; n++) {
+    if (!file.commentableLines.has(n)) return false;
+  }
+  return true;
 }

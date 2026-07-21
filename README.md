@@ -19,6 +19,13 @@ Preview without posting anything:
 npx pr-sage review --repo owner/name --pr 123 --dry-run
 ```
 
+Review your local changes before pushing (no PR, no GitHub token needed):
+
+```bash
+npx pr-sage local --base main            # diff vs main
+npx pr-sage local --staged --fail-on critical   # gate staged changes
+```
+
 Review in Korean with a different provider:
 
 ```bash
@@ -39,14 +46,18 @@ npx pr-sage review --repo owner/name --pr 123 --provider openai --locale Korean
 | `--min-severity <sev>` | — | Drop findings below this severity (e.g. `suggestion` hides nitpicks) |
 | `--fail-on <sev>` | — | Exit 1 if any finding is at or above this severity — use as a CI quality gate |
 | `--context <mode>` | `patch` | `full` sends complete file contents to the model for better accuracy (more tokens) |
+| `--event <mode>` | `comment` | `auto` approves clean PRs and requests changes on critical findings (falls back to comment on your own PRs) |
+| `--verify` | off | Second model pass that rejects unconfirmed findings — fewer false positives, double cost |
+| `--output <format>` | `text` | `json` or `sarif` for machine-readable results |
 | `--no-dedupe` | — | Repost findings already commented by a previous pr-sage review (dedup is on by default) |
+| `--no-incremental` | — | Always review the full PR diff instead of only commits since the last pr-sage review |
 | `--batch-chars <n>` | `80000` | Max diff characters per model request; larger PRs are reviewed in batches |
 | `--config <path>` | `.pr-sage.json` | Config file path |
 | `--dry-run` | — | Print the review to stdout instead of posting |
 
 Required environment variables: `GITHUB_TOKEN` (with `pull_requests: write`), plus the API key for your provider (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`).
 
-On repeat runs (e.g. new commits pushed to the PR), pr-sage skips findings it has already commented and posts nothing when there is nothing new — no duplicate-comment spam.
+On repeat runs (e.g. new commits pushed to the PR), pr-sage reviews **only the commits pushed since its last review** (incremental mode), skips findings it has already commented, and posts nothing when there is nothing new — no duplicate-comment spam, no wasted tokens. If your repo has a `CLAUDE.md` or `CONTRIBUTING.md`, it is automatically injected as review context (disable with `"repoContext": false`). GitHub Enterprise works out of the box via `$GITHUB_API_URL` or the `githubApiUrl` config field.
 
 ## Configuration file
 
