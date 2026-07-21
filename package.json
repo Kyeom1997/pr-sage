@@ -1,6 +1,6 @@
 {
   "name": "pr-sage",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "AI-powered GitHub pull request reviewer. Posts inline comments and a summary review using Claude, OpenAI, or Gemini.",
   "keywords": [
     "code-review",
