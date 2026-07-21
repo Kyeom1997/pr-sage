@@ -1,0 +1,47 @@
+name: "pr-sage AI Review"
+description: "AI-powered pull request review — inline comments plus a summary, using Claude, OpenAI, or Gemini."
+branding:
+  icon: "eye"
+  color: "purple"
+
+inputs:
+  provider:
+    description: "LLM provider: anthropic | openai | gemini"
+    default: "anthropic"
+  model:
+    description: "Model id (defaults to the provider's recommended model)"
+    default: ""
+  locale:
+    description: "Language for review output (e.g. Korean, English)"
+    default: "English"
+  exclude:
+    description: "Comma-separated path substrings to skip, added to defaults"
+    default: ""
+  github-token:
+    description: "Token used to read the PR and post the review"
+    default: ${{ github.token }}
+  anthropic-api-key:
+    description: "Anthropic API key (when provider is anthropic)"
+    default: ""
+  openai-api-key:
+    description: "OpenAI API key (when provider is openai)"
+    default: ""
+  gemini-api-key:
+    description: "Gemini API key (when provider is gemini)"
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Run pr-sage
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+        GEMINI_API_KEY: ${{ inputs.gemini-api-key }}
+      run: |
+        ARGS=(review --pr "${{ github.event.pull_request.number }}" --provider "${{ inputs.provider }}" --locale "${{ inputs.locale }}")
+        if [ -n "${{ inputs.model }}" ]; then ARGS+=(--model "${{ inputs.model }}"); fi
+        if [ -n "${{ inputs.exclude }}" ]; then ARGS+=(--exclude "${{ inputs.exclude }}"); fi
+        npx --yes pr-sage "${ARGS[@]}"

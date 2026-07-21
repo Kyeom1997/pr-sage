@@ -1,0 +1,63 @@
+{
+  "name": "pr-sage",
+  "version": "0.1.0",
+  "description": "AI-powered GitHub pull request reviewer. Posts inline comments and a summary review using Claude, OpenAI, or Gemini.",
+  "keywords": [
+    "code-review",
+    "github",
+    "pull-request",
+    "ai",
+    "claude",
+    "cli",
+    "github-actions"
+  ],
+  "license": "MIT",
+  "author": "Kyeom1997",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kyeom1997/pr-sage.git"
+  },
+  "homepage": "https://github.com/Kyeom1997/pr-sage#readme",
+  "bugs": {
+    "url": "https://github.com/Kyeom1997/pr-sage/issues"
+  },
+  "type": "module",
+  "bin": {
+    "pr-sage": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "action.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.4",
+    "@google/genai": "^2.12.0",
+    "commander": "^15.0.0",
+    "openai": "^6.48.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
