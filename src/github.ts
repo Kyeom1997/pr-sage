@@ -33,7 +33,7 @@ export class GitHubClient {
       title: string;
       body: string | null;
       base: { ref: string };
-      head: { ref: string };
+      head: { ref: string; sha: string };
     }>(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}`);
 
     const files: DiffFile[] = [];
@@ -59,8 +59,54 @@ export class GitHubClient {
       body: pr.body ?? "",
       baseRef: pr.base.ref,
       headRef: pr.head.ref,
+      headSha: pr.head.sha,
       files,
     };
+  }
+
+  /** Fetch a file's content at a given ref. Returns null for binary/oversized/missing files. */
+  async fetchFileContent(path: string, ref: string): Promise<string | null> {
+    try {
+      const res = await this.request<{ type: string; encoding?: string; content?: string }>(
+        `/repos/${this.owner}/${this.repo}/contents/${encodeURIComponent(path).replaceAll("%2F", "/")}?ref=${ref}`,
+      );
+      if (res.type !== "file" || res.encoding !== "base64" || !res.content) return null;
+      return Buffer.from(res.content, "base64").toString("utf8");
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Locate previous pr-sage activity on this PR: inline-comment locations
+   * (for dedup) and whether any pr-sage summary review exists.
+   */
+  async fetchPrSageHistory(
+    prNumber: number,
+  ): Promise<{ commentedLocations: Set<string>; hasReview: boolean }> {
+    const commentedLocations = new Set<string>();
+    for (let page = 1; ; page++) {
+      const batch = await this.request<
+        Array<{ path: string; line: number | null; body: string }>
+      >(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}/comments?per_page=100&page=${page}`);
+      for (const c of batch) {
+        if (c.line !== null && c.body.includes(PR_SAGE_MARKER)) {
+          commentedLocations.add(`${c.path}:${c.line}`);
+        }
+      }
+      if (batch.length < 100) break;
+    }
+
+    let hasReview = false;
+    for (let page = 1; ; page++) {
+      const batch = await this.request<Array<{ body: string | null }>>(
+        `/repos/${this.owner}/${this.repo}/pulls/${prNumber}/reviews?per_page=100&page=${page}`,
+      );
+      if (batch.some((r) => r.body?.includes(PR_SAGE_MARKER))) hasReview = true;
+      if (batch.length < 100) break;
+    }
+
+    return { commentedLocations, hasReview };
   }
 
   async postReview(prNumber: number, summary: string, findings: Finding[]): Promise<string> {
@@ -84,6 +130,9 @@ export class GitHubClient {
   }
 }
 
+/** Hidden marker identifying comments posted by pr-sage (used for dedup). */
+export const PR_SAGE_MARKER = "<!-- pr-sage -->";
+
 const SEVERITY_BADGE: Record<Finding["severity"], string> = {
   critical: "🔴 **Critical**",
   warning: "🟡 **Warning**",
@@ -96,7 +145,7 @@ export function formatComment(f: Finding): string {
   if (f.suggestion) {
     body += `\n\n\`\`\`suggestion\n${f.suggestion}\n\`\`\``;
   }
-  return body;
+  return `${body}\n\n${PR_SAGE_MARKER}`;
 }
 
 /** Parse "owner/repo", or fall back to the GITHUB_REPOSITORY env var (set in Actions). */

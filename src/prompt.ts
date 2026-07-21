@@ -40,7 +40,10 @@ export const REVIEW_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-export function systemPrompt(locale: string): string {
+export function systemPrompt(locale: string, instructions?: string): string {
+  const custom = instructions?.trim()
+    ? `\n\nProject-specific review guidelines (follow these in addition to the rules above):\n${instructions.trim()}`
+    : "";
   return `You are an expert code reviewer for GitHub pull requests.
 
 You are given a PR description and its diff. Each right-side diff line is prefixed with its new-file line number. Review the changes and report findings.
@@ -57,19 +60,29 @@ Rules:
 - No generic advice ("consider adding tests") without pointing at something specific.
 - Do not praise line-by-line; positive notes belong in the summary only.
 - If the diff looks fine, return an empty findings array and say so in the summary.
-- Write the summary and all finding bodies in ${locale}.`;
+- Write the summary and all finding bodies in ${locale}.${custom}`;
 }
 
 const MAX_PATCH_CHARS = 30_000;
+const MAX_CONTENT_CHARS = 40_000;
 
-export function renderFiles(files: DiffFile[]): string {
+export function renderFiles(files: DiffFile[], contents?: Map<string, string>): string {
   return files
     .map((f) => {
       let patch = annotatePatch(f.patch);
       if (patch.length > MAX_PATCH_CHARS) {
         patch = `${patch.slice(0, MAX_PATCH_CHARS)}\n... (patch truncated)`;
       }
-      return `### ${f.path} (${f.status})\n\`\`\`diff\n${patch}\n\`\`\``;
+      let block = `### ${f.path} (${f.status})\n\`\`\`diff\n${patch}\n\`\`\``;
+      const content = contents?.get(f.path);
+      if (content) {
+        let body = content;
+        if (body.length > MAX_CONTENT_CHARS) {
+          body = `${body.slice(0, MAX_CONTENT_CHARS)}\n... (file truncated)`;
+        }
+        block += `\n\nFull new version of ${f.path} for context (findings must still anchor to numbered diff lines above):\n\`\`\`\n${body}\n\`\`\``;
+      }
+      return block;
     })
     .join("\n\n");
 }

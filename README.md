@@ -35,11 +35,36 @@ npx pr-sage review --repo owner/name --pr 123 --provider openai --locale Korean
 | `--provider <name>` | `anthropic` | `anthropic` \| `openai` \| `gemini` |
 | `-m, --model <id>` | provider default | Model id (`claude-opus-4-8`, `gpt-5`, `gemini-flash-latest`) |
 | `--locale <lang>` | `English` | Language for the review output |
-| `--exclude <patterns>` | — | Comma-separated path substrings to skip (added to defaults: lockfiles, `dist/`, `build/`, …) |
+| `--exclude <patterns>` | — | Comma-separated globs or substrings to skip (added to defaults: lockfiles, `dist/`, `build/`, …) |
+| `--min-severity <sev>` | — | Drop findings below this severity (e.g. `suggestion` hides nitpicks) |
+| `--fail-on <sev>` | — | Exit 1 if any finding is at or above this severity — use as a CI quality gate |
+| `--context <mode>` | `patch` | `full` sends complete file contents to the model for better accuracy (more tokens) |
+| `--no-dedupe` | — | Repost findings already commented by a previous pr-sage review (dedup is on by default) |
 | `--batch-chars <n>` | `80000` | Max diff characters per model request; larger PRs are reviewed in batches |
+| `--config <path>` | `.pr-sage.json` | Config file path |
 | `--dry-run` | — | Print the review to stdout instead of posting |
 
 Required environment variables: `GITHUB_TOKEN` (with `pull_requests: write`), plus the API key for your provider (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`).
+
+On repeat runs (e.g. new commits pushed to the PR), pr-sage skips findings it has already commented and posts nothing when there is nothing new — no duplicate-comment spam.
+
+## Configuration file
+
+Put a `.pr-sage.json` in the directory you run from (CLI flags override it):
+
+```json
+{
+  "provider": "anthropic",
+  "locale": "Korean",
+  "exclude": ["src/generated/**", "**/*.snap"],
+  "minSeverity": "suggestion",
+  "failOn": "critical",
+  "context": "full",
+  "instructions": "We use Result<T, E> for error handling — flag thrown exceptions in domain code. Prefer early returns over nested conditionals."
+}
+```
+
+`instructions` is injected into the review prompt — use it for team conventions the reviewer should enforce.
 
 ## GitHub Action
 
@@ -66,6 +91,7 @@ jobs:
           provider: anthropic
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           locale: Korean
+          fail-on: critical   # optional: block merge on critical findings
 ```
 
 ## How it works
@@ -73,7 +99,7 @@ jobs:
 1. Fetches the PR metadata and per-file patches from the GitHub API.
 2. Annotates each diff line with its new-file line number and filters out lockfiles/build artifacts.
 3. Asks the LLM for a structured review (JSON schema — no parsing heuristics): summary + findings with `path`, `line`, `severity`, and an optional single-line suggestion.
-4. Validates every finding against the diff (GitHub rejects reviews that comment on lines outside the diff) and posts one review: inline comments + summary.
+4. Validates every finding at runtime (zod) and against the diff (GitHub rejects reviews that comment on lines outside the diff), demotes unsafe multi-line suggestions, skips findings already posted by a previous run, retries on provider rate limits, and posts one review: inline comments + summary.
 
 Severities: 🔴 critical · 🟡 warning · 🔵 suggestion · ⚪ nitpick. Safe single-line fixes are posted as GitHub suggestion blocks you can commit with one click.
 

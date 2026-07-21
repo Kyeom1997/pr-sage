@@ -1,4 +1,10 @@
-export type Severity = "critical" | "warning" | "suggestion" | "nitpick";
+export const SEVERITIES = ["critical", "warning", "suggestion", "nitpick"] as const;
+export type Severity = (typeof SEVERITIES)[number];
+
+/** True when `severity` is at least as severe as `threshold`. */
+export function severityAtLeast(severity: Severity, threshold: Severity): boolean {
+  return SEVERITIES.indexOf(severity) <= SEVERITIES.indexOf(threshold);
+}
 
 export interface Finding {
   /** Repo-relative path of the file the finding is in. */
@@ -31,6 +37,7 @@ export interface PullRequestInfo {
   body: string;
   baseRef: string;
   headRef: string;
+  headSha: string;
   files: DiffFile[];
 }
 
@@ -42,10 +49,13 @@ export interface ReviewRequest {
   /** Annotated patches ready to embed in the prompt. */
   filesText: string;
   locale: string;
+  /** Project-specific review guidelines appended to the system prompt. */
+  instructions?: string;
 }
 
 export interface Provider {
   readonly name: ProviderName;
   readonly model: string;
-  review(request: ReviewRequest): Promise<ReviewResult>;
+  /** Returns raw parsed JSON; callers validate with parseReviewResult. */
+  review(request: ReviewRequest): Promise<unknown>;
 }

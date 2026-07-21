@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { Provider, ReviewRequest, ReviewResult } from "../types.js";
+import type { Provider, ReviewRequest } from "../types.js";
 import { REVIEW_SCHEMA, systemPrompt, userPrompt } from "../prompt.js";
 
 export const DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-8";
@@ -12,12 +12,12 @@ export class AnthropicProvider implements Provider {
     this.client = new Anthropic();
   }
 
-  async review(req: ReviewRequest): Promise<ReviewResult> {
+  async review(req: ReviewRequest): Promise<unknown> {
     const stream = this.client.messages.stream({
       model: this.model,
       max_tokens: 64000,
       thinking: { type: "adaptive" },
-      system: systemPrompt(req.locale),
+      system: systemPrompt(req.locale, req.instructions),
       output_config: {
         format: { type: "json_schema", schema: REVIEW_SCHEMA },
       },
@@ -33,6 +33,6 @@ export class AnthropicProvider implements Provider {
     }
     const text = message.content.find((b) => b.type === "text");
     if (!text) throw new Error("Anthropic response contained no text block.");
-    return JSON.parse(text.text) as ReviewResult;
+    return JSON.parse(text.text) as unknown;
   }
 }

@@ -15,7 +15,16 @@ inputs:
     description: "Language for review output (e.g. Korean, English)"
     default: "English"
   exclude:
-    description: "Comma-separated path substrings to skip, added to defaults"
+    description: "Comma-separated globs or substrings to skip, added to defaults"
+    default: ""
+  fail-on:
+    description: "Fail the job if any finding is at or above this severity (critical | warning | suggestion | nitpick)"
+    default: ""
+  min-severity:
+    description: "Drop findings below this severity"
+    default: ""
+  context:
+    description: "patch (default) or full — send full file contents for better accuracy"
     default: ""
   github-token:
     description: "Token used to read the PR and post the review"
@@ -44,4 +53,7 @@ runs:
         ARGS=(review --pr "${{ github.event.pull_request.number }}" --provider "${{ inputs.provider }}" --locale "${{ inputs.locale }}")
         if [ -n "${{ inputs.model }}" ]; then ARGS+=(--model "${{ inputs.model }}"); fi
         if [ -n "${{ inputs.exclude }}" ]; then ARGS+=(--exclude "${{ inputs.exclude }}"); fi
-        npx --yes pr-sage "${ARGS[@]}"
+        if [ -n "${{ inputs.fail-on }}" ]; then ARGS+=(--fail-on "${{ inputs.fail-on }}"); fi
+        if [ -n "${{ inputs.min-severity }}" ]; then ARGS+=(--min-severity "${{ inputs.min-severity }}"); fi
+        if [ -n "${{ inputs.context }}" ]; then ARGS+=(--context "${{ inputs.context }}"); fi
+        npx --yes pr-sage@0.2.0 "${ARGS[@]}"

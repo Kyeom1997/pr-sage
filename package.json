@@ -1,6 +1,6 @@
 {
   "name": "pr-sage",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AI-powered GitHub pull request reviewer. Posts inline comments and a summary review using Claude, OpenAI, or Gemini.",
   "keywords": [
     "code-review",
@@ -52,10 +52,13 @@
     "@anthropic-ai/sdk": "^0.112.4",
     "@google/genai": "^2.12.0",
     "commander": "^15.0.0",
-    "openai": "^6.48.0"
+    "openai": "^6.48.0",
+    "picomatch": "^4.0.5",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/picomatch": "^4.0.3",
     "tsup": "^8.0.0",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
