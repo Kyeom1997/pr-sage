@@ -1,0 +1,77 @@
+{
+  "provider": "gemini",
+  "model": "gemini-flash-lite-latest",
+  "args": {
+    "repos": "fastify/fastify",
+    "per-repo": "3",
+    "max-files": "15",
+    "provider": "gemini",
+    "model": "gemini-flash-lite-latest",
+    "batch-chars": "25000"
+  },
+  "summary": {
+    "prs": 3,
+    "totalFindings": 0,
+    "findingsPerPr": 0,
+    "prsWithZeroFindings": 3,
+    "severities": {},
+    "medianDurationMs": 1996,
+    "totalInputTokens": 2998,
+    "totalOutputTokens": 181,
+    "droppedOutOfDiff": 0
+  },
+  "results": [
+    {
+      "repo": "fastify/fastify",
+      "pr": 6785,
+      "url": "https://github.com/fastify/fastify/pull/6785",
+      "title": "docs(ecosystem): add @thecodepace/fastify-http-query",
+      "files": 1,
+      "diffChars": 650,
+      "durationMs": 1996,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 895,
+        "outputTokens": 55
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "fastify/fastify",
+      "pr": 6772,
+      "url": "https://github.com/fastify/fastify/pull/6772",
+      "title": "docs(type-providers): clarify as const usage",
+      "files": 1,
+      "diffChars": 832,
+      "durationMs": 1894,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 903,
+        "outputTokens": 66
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "fastify/fastify",
+      "pr": 6771,
+      "url": "https://github.com/fastify/fastify/pull/6771",
+      "title": "docs(type-providers): update import for article consistency",
+      "files": 1,
+      "diffChars": 840,
+      "durationMs": 2003,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1200,
+        "outputTokens": 60
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    }
+  ],
+  "failures": []
+}

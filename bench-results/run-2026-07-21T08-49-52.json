@@ -1,0 +1,567 @@
+{
+  "provider": "gemini",
+  "model": "gemini-flash-lite-latest",
+  "args": {
+    "repos": "fastify/fastify,honojs/hono,cli/cli,vitejs/vite",
+    "per-repo": "7",
+    "max-files": "20",
+    "provider": "gemini",
+    "model": "gemini-flash-lite-latest",
+    "batch-chars": "25000"
+  },
+  "summary": {
+    "prs": 28,
+    "totalFindings": 7,
+    "findingsPerPr": 0.25,
+    "prsWithZeroFindings": 25,
+    "severities": {
+      "warning": 3,
+      "suggestion": 4
+    },
+    "medianDurationMs": 2264,
+    "totalInputTokens": 96877,
+    "totalOutputTokens": 3432,
+    "droppedOutOfDiff": 0
+  },
+  "results": [
+    {
+      "repo": "fastify/fastify",
+      "pr": 6785,
+      "url": "https://github.com/fastify/fastify/pull/6785",
+      "title": "docs(ecosystem): add @thecodepace/fastify-http-query",
+      "files": 1,
+      "diffChars": 650,
+      "durationMs": 2283,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 895,
+        "outputTokens": 61
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "fastify/fastify",
+      "pr": 6772,
+      "url": "https://github.com/fastify/fastify/pull/6772",
+      "title": "docs(type-providers): clarify as const usage",
+      "files": 1,
+      "diffChars": 832,
+      "durationMs": 2212,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 903,
+        "outputTokens": 59
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "fastify/fastify",
+      "pr": 6771,
+      "url": "https://github.com/fastify/fastify/pull/6771",
+      "title": "docs(type-providers): update import for article consistency",
+      "files": 1,
+      "diffChars": 840,
+      "durationMs": 2736,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1200,
+        "outputTokens": 66
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "fastify/fastify",
+      "pr": 6853,
+      "url": "https://github.com/fastify/fastify/pull/6853",
+      "title": "ci: pin actions to commit-hash",
+      "files": 17,
+      "diffChars": 10968,
+      "durationMs": 2716,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 6908,
+        "outputTokens": 69
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "fastify/fastify",
+      "pr": 6852,
+      "url": "https://github.com/fastify/fastify/pull/6852",
+      "title": "chore(sponsor): add n-ix",
+      "files": 1,
+      "diffChars": 252,
+      "durationMs": 2004,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 556,
+        "outputTokens": 45
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "fastify/fastify",
+      "pr": 6854,
+      "url": "https://github.com/fastify/fastify/pull/6854",
+      "title": "perf: reuse cached content types for response serialization",
+      "files": 2,
+      "diffChars": 2698,
+      "durationMs": 2264,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1542,
+        "outputTokens": 73
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "fastify/fastify",
+      "pr": 6832,
+      "url": "https://github.com/fastify/fastify/pull/6832",
+      "title": "feat: rfc10008 http query method",
+      "files": 14,
+      "diffChars": 22849,
+      "durationMs": 2599,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 9536,
+        "outputTokens": 112
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "honojs/hono",
+      "pr": 5136,
+      "url": "https://github.com/honojs/hono/pull/5136",
+      "title": "test(validator): fix misspelled identifier in transform type test",
+      "files": 1,
+      "diffChars": 1462,
+      "durationMs": 2213,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1064,
+        "outputTokens": 48
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "honojs/hono",
+      "pr": 5135,
+      "url": "https://github.com/honojs/hono/pull/5135",
+      "title": "fix(sse): emit retry feild when retry is `0`",
+      "files": 2,
+      "diffChars": 1664,
+      "durationMs": 1833,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1232,
+        "outputTokens": 57
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "honojs/hono",
+      "pr": 5133,
+      "url": "https://github.com/honojs/hono/pull/5133",
+      "title": "fix(request): fix multipart boundary mismatch in `cloneRawRequest`",
+      "files": 2,
+      "diffChars": 1870,
+      "durationMs": 2443,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1321,
+        "outputTokens": 97
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "honojs/hono",
+      "pr": 5131,
+      "url": "https://github.com/honojs/hono/pull/5131",
+      "title": "fix(utils/body): reuse cached formData in `parseBody()`",
+      "files": 2,
+      "diffChars": 1449,
+      "durationMs": 3056,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1091,
+        "outputTokens": 65
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "honojs/hono",
+      "pr": 5130,
+      "url": "https://github.com/honojs/hono/pull/5130",
+      "title": "refactor(aws-lambada): remove FIXME in `@ts-expect-error`",
+      "files": 1,
+      "diffChars": 364,
+      "durationMs": 2250,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 707,
+        "outputTokens": 65
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "honojs/hono",
+      "pr": 5126,
+      "url": "https://github.com/honojs/hono/pull/5126",
+      "title": "fix: close quote in combine JSDoc example",
+      "files": 1,
+      "diffChars": 377,
+      "durationMs": 2046,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 565,
+        "outputTokens": 54
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "honojs/hono",
+      "pr": 5117,
+      "url": "https://github.com/honojs/hono/pull/5117",
+      "title": "chore(benchmark): add app.fetch() overhead benchmark",
+      "files": 8,
+      "diffChars": 7896,
+      "durationMs": 3671,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 4217,
+        "outputTokens": 490
+      },
+      "findings": [
+        {
+          "path": "benchmarks/fetch/ts-resolve.mjs",
+          "line": 7,
+          "severity": "warning",
+          "title": "Use of experimental/removed Node.js API",
+          "body": "The `mod.registerHooks` function is not a stable or standard part of the public `node:module` API; the current standard for loader hooks in modern Node.js is `module.register()`. Depending on the Node version, this file may fail to function correctly. I suggest using `import.meta.resolve` or `module.register` if necessary, or simply relying on standard TypeScript transpilation for the benchmark setup."
+        },
+        {
+          "path": "benchmarks/fetch/bench.mts",
+          "line": 26,
+          "severity": "suggestion",
+          "title": "Unsafe path construction",
+          "body": "While it works in this context, importing by constructing a path string manually is fragile. Consider using `import.meta.resolve` to ensure the module resolution logic is handled correctly by the runtime rather than relying on `pathToFileURL` with arbitrary string concatenation."
+        },
+        {
+          "path": "benchmarks/fetch/compare.sh",
+          "line": 17,
+          "severity": "suggestion",
+          "title": "Use of /tmp for worktree creation",
+          "body": "Using `mktemp -d` in the system temp directory for a git worktree might cause issues if the temp folder is on a different partition than the repository root (git worktrees require the same filesystem). Consider creating the temporary worktree inside the repository folder (e.g., `.git/bench-worktree`) to ensure partition compatibility."
+        }
+      ],
+      "bySeverity": {
+        "warning": 1,
+        "suggestion": 2
+      },
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "cli/cli",
+      "pr": 13922,
+      "url": "https://github.com/cli/cli/pull/13922",
+      "title": "Add OWNER/REPO format hint to gh search --repo flag",
+      "files": 4,
+      "diffChars": 3800,
+      "durationMs": 2448,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1961,
+        "outputTokens": 76
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "cli/cli",
+      "pr": 13807,
+      "url": "https://github.com/cli/cli/pull/13807",
+      "title": "Add name-based resolution to gh project item-edit",
+      "files": 7,
+      "diffChars": 51586,
+      "durationMs": 12988,
+      "usage": {
+        "calls": 4,
+        "inputTokens": 28155,
+        "outputTokens": 425
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "cli/cli",
+      "pr": 13787,
+      "url": "https://github.com/cli/cli/pull/13787",
+      "title": "Bump keyring operation timeout from 3s to 60s",
+      "files": 1,
+      "diffChars": 822,
+      "durationMs": 2641,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 847,
+        "outputTokens": 54
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "cli/cli",
+      "pr": 521,
+      "url": "https://github.com/cli/cli/pull/521",
+      "title": "fix(486): Getting issue list on no remotes specified",
+      "files": 1,
+      "diffChars": 454,
+      "durationMs": 3077,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 660,
+        "outputTokens": 228
+      },
+      "findings": [
+        {
+          "path": "context/context.go",
+          "line": 204,
+          "endLine": 206,
+          "severity": "suggestion",
+          "title": "Use consistent error messaging",
+          "body": "The error message here ('no git remotes found') is slightly different from the one added later ('no git remote found for a github.com repository'). Consider aligning them for better UX, or clarify why the check is performed in two places if they are logically distinct.",
+          "suggestion": "if len(gitRemotes) == 0 {\n\t\t\treturn nil, errors.New(\"no git remotes found\")\n\t\t}"
+        }
+      ],
+      "bySeverity": {
+        "suggestion": 1
+      },
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "cli/cli",
+      "pr": 13492,
+      "url": "https://github.com/cli/cli/pull/13492",
+      "title": "Replace SITE_DEPLOY_PAT with gh-cli-site-deployer App",
+      "files": 2,
+      "diffChars": 2572,
+      "durationMs": 2002,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1617,
+        "outputTokens": 66
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "cli/cli",
+      "pr": 13780,
+      "url": "https://github.com/cli/cli/pull/13780",
+      "title": "Harden deployment workflow",
+      "files": 5,
+      "diffChars": 43468,
+      "durationMs": 6838,
+      "usage": {
+        "calls": 4,
+        "inputTokens": 16912,
+        "outputTokens": 720
+      },
+      "findings": [
+        {
+          "path": ".github/workflows/deployment.yml",
+          "line": 403,
+          "severity": "warning",
+          "title": "GPG signing conditional logic mismatch",
+          "body": "The previous code explicitly checked if `GPG_SIGN` was true before signing. The new code attempts to run the command unconditionally. If `inputs.environment` is not 'production', `gpg` will likely fail or produce unsigned artifacts, contradicting the goal of `dry_run` or environment-specific deployments. You should reinstate the conditional check."
+        },
+        {
+          "path": ".github/workflows/deployment.yml",
+          "line": 413,
+          "severity": "warning",
+          "title": "Removed GPG signing bypass for non-production environments",
+          "body": "Similar to the previous finding, the removal of the `[ \"$GPG_SIGN\" = \"true\" ] || sed ...` logic means `reprepro` will now attempt to sign even in non-production or dry-run scenarios. Ensure the environment is configured to handle this or restore the conditional."
+        },
+        {
+          "path": ".github/workflows/deployment.yml",
+          "line": 139,
+          "severity": "suggestion",
+          "title": "Unnecessary shell invocation",
+          "body": "The `shell: bash` is redundant as the default shell for `run` steps on macOS runners is bash. Removing it keeps the YAML cleaner."
+        }
+      ],
+      "bySeverity": {
+        "warning": 2,
+        "suggestion": 1
+      },
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "cli/cli",
+      "pr": 13864,
+      "url": "https://github.com/cli/cli/pull/13864",
+      "title": "Add Grok skill host support",
+      "files": 4,
+      "diffChars": 2582,
+      "durationMs": 2116,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1644,
+        "outputTokens": 55
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "vitejs/vite",
+      "pr": 22983,
+      "url": "https://github.com/vitejs/vite/pull/22983",
+      "title": "fix(css): rewrite urls in OnceExit-injected content",
+      "files": 5,
+      "diffChars": 2501,
+      "durationMs": 2487,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1877,
+        "outputTokens": 97
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "vitejs/vite",
+      "pr": 22988,
+      "url": "https://github.com/vitejs/vite/pull/22988",
+      "title": "docs: add file extension to import for native config loader compat",
+      "files": 1,
+      "diffChars": 485,
+      "durationMs": 1924,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 869,
+        "outputTokens": 60
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "vitejs/vite",
+      "pr": 22994,
+      "url": "https://github.com/vitejs/vite/pull/22994",
+      "title": "chore(deps): update actions/setup-node action to v7",
+      "files": 5,
+      "diffChars": 2359,
+      "durationMs": 2175,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 5840,
+        "outputTokens": 76
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "vitejs/vite",
+      "pr": 22993,
+      "url": "https://github.com/vitejs/vite/pull/22993",
+      "title": "docs: fix links",
+      "files": 3,
+      "diffChars": 4896,
+      "durationMs": 2197,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1791,
+        "outputTokens": 52
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "vitejs/vite",
+      "pr": 22972,
+      "url": "https://github.com/vitejs/vite/pull/22972",
+      "title": "chore: fix ts erros in test cases",
+      "files": 1,
+      "diffChars": 320,
+      "durationMs": 2102,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 825,
+        "outputTokens": 52
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "vitejs/vite",
+      "pr": 22989,
+      "url": "https://github.com/vitejs/vite/pull/22989",
+      "title": "docs(static-deploy): update outdated Cloudflare and Render links",
+      "files": 1,
+      "diffChars": 1700,
+      "durationMs": 2005,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1028,
+        "outputTokens": 60
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    },
+    {
+      "repo": "vitejs/vite",
+      "pr": 22990,
+      "url": "https://github.com/vitejs/vite/pull/22990",
+      "title": "docs(troubleshooting): update outdated link",
+      "files": 1,
+      "diffChars": 2073,
+      "durationMs": 2101,
+      "usage": {
+        "calls": 1,
+        "inputTokens": 1114,
+        "outputTokens": 50
+      },
+      "findings": [],
+      "bySeverity": {},
+      "droppedOutOfDiff": 0
+    }
+  ],
+  "failures": []
+}
