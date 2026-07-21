@@ -66,16 +66,27 @@ export function validateFindings(
   findings: Finding[],
   files: DiffFile[],
 ): { valid: Finding[]; dropped: Finding[] } {
-  const byPath = new Map(files.map((f) => [f.path, f]));
+  // Merge commentable lines per path — oversized files may be split into
+  // multiple hunk-level DiffFile entries sharing one path.
+  const linesByPath = new Map<string, Set<number>>();
+  for (const file of files) {
+    const existing = linesByPath.get(file.path);
+    if (existing) {
+      for (const n of file.commentableLines) existing.add(n);
+    } else {
+      linesByPath.set(file.path, new Set(file.commentableLines));
+    }
+  }
+
   const valid: Finding[] = [];
   const dropped: Finding[] = [];
   for (const finding of findings) {
-    const file = byPath.get(finding.path);
-    if (!file || !file.commentableLines.has(finding.line)) {
+    const lines = linesByPath.get(finding.path);
+    if (!lines || !lines.has(finding.line)) {
       dropped.push(finding);
       continue;
     }
-    if (finding.endLine !== undefined && !isValidRange(finding, file)) {
+    if (finding.endLine !== undefined && !isValidRange(finding, lines)) {
       valid.push({ ...finding, endLine: undefined });
     } else {
       valid.push(finding);
@@ -84,11 +95,11 @@ export function validateFindings(
   return { valid, dropped };
 }
 
-function isValidRange(finding: Finding, file: DiffFile): boolean {
+function isValidRange(finding: Finding, lines: Set<number>): boolean {
   const end = finding.endLine!;
   if (end <= finding.line || end - finding.line > MAX_RANGE_LINES) return false;
   for (let n = finding.line; n <= end; n++) {
-    if (!file.commentableLines.has(n)) return false;
+    if (!lines.has(n)) return false;
   }
   return true;
 }

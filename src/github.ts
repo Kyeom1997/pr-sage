@@ -10,16 +10,38 @@ export function shaMarker(sha: string): string {
 }
 
 const SHA_MARKER_RE = /<!-- pr-sage sha:([0-9a-f]{6,40}) -->/;
+const FP_MARKER_RE = /<!-- pr-sage fp:([0-9a-z]+) -->/;
+
+/**
+ * Content-based identity of a finding (path + normalized title), stable
+ * across line shifts. Used to avoid reposting the same issue after new
+ * commits move it to a different line.
+ */
+export function findingFingerprint(f: Pick<Finding, "path" | "title">): string {
+  const input = `${f.path}|${f.title.toLowerCase().replace(/\s+/g, " ").trim()}`;
+  let hash = 5381;
+  for (let i = 0; i < input.length; i++) {
+    hash = ((hash << 5) + hash + input.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(36);
+}
+
+export function fpMarker(f: Pick<Finding, "path" | "title">): string {
+  return `<!-- pr-sage fp:${findingFingerprint(f)} -->`;
+}
 
 export class GitHubClient {
   private readonly baseUrl: string;
+  private readonly fetchImpl: typeof fetch;
 
   constructor(
     private readonly token: string,
     private readonly owner: string,
     private readonly repo: string,
     baseUrl?: string,
+    fetchImpl: typeof fetch = fetch,
   ) {
+    this.fetchImpl = fetchImpl;
     // GitHub Actions sets GITHUB_API_URL automatically, including on GHES.
     this.baseUrl = (baseUrl ?? process.env.GITHUB_API_URL ?? "https://api.github.com").replace(
       /\/$/,
@@ -28,7 +50,7 @@ export class GitHubClient {
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
+    const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
       ...init,
       headers: {
         Accept: "application/vnd.github+json",
@@ -133,10 +155,13 @@ export class GitHubClient {
    */
   async fetchPrSageHistory(prNumber: number): Promise<{
     commentedLocations: Set<string>;
+    /** `${path}|${fingerprint}` of previously posted findings (line-shift-proof). */
+    fingerprints: Set<string>;
     hasReview: boolean;
     lastReviewedSha: string | null;
   }> {
     const commentedLocations = new Set<string>();
+    const fingerprints = new Set<string>();
     for (let page = 1; ; page++) {
       const batch = await this.request<
         Array<{ path: string; line: number | null; body: string }>
@@ -144,6 +169,8 @@ export class GitHubClient {
       for (const c of batch) {
         if (c.line !== null && c.body.includes(PR_SAGE_MARKER)) {
           commentedLocations.add(`${c.path}:${c.line}`);
+          const fp = c.body.match(FP_MARKER_RE)?.[1];
+          if (fp) fingerprints.add(`${c.path}|${fp}`);
         }
       }
       if (batch.length < 100) break;
@@ -164,7 +191,7 @@ export class GitHubClient {
       if (batch.length < 100) break;
     }
 
-    return { commentedLocations, hasReview, lastReviewedSha };
+    return { commentedLocations, fingerprints, hasReview, lastReviewedSha };
   }
 
   async postReview(
@@ -220,7 +247,7 @@ export function formatComment(f: Finding): string {
   if (f.suggestion) {
     body += `\n\n\`\`\`suggestion\n${f.suggestion}\n\`\`\``;
   }
-  return `${body}\n\n${PR_SAGE_MARKER}`;
+  return `${body}\n\n${PR_SAGE_MARKER}\n${fpMarker(f)}`;
 }
 
 /** Parse "owner/repo", or fall back to the GITHUB_REPOSITORY env var (set in Actions). */

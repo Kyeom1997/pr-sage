@@ -94,9 +94,6 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - uses: Kyeom1997/pr-sage@v1
         with:
           provider: anthropic
@@ -129,6 +126,10 @@ const { result } = await runReview(provider, pr, {
   log: console.error,
 });
 ```
+
+## Security & privacy
+
+Reviewing code means sending diffs (and optionally full files) to the LLM provider you choose — read [SECURITY.md](SECURITY.md) for the exact data flow, provider policy links, prompt-injection mitigations, and token scope guidance before enabling this on private repositories. The GitHub Action executes the bundled code committed at the tag you pin (no install step), and npm releases carry provenance.
 
 ## License
 

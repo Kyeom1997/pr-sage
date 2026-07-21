@@ -2,7 +2,7 @@
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { Command } from "commander";
-import { GitHubClient, resolveRepo, formatComment } from "./github.js";
+import { GitHubClient, resolveRepo, formatComment, findingFingerprint } from "./github.js";
 import { createProvider } from "./providers/index.js";
 import { DEFAULT_EXCLUDES, runReview, type ReviewTarget } from "./review.js";
 import { loadConfig, type PrSageConfig } from "./config.js";
@@ -155,9 +155,11 @@ addSharedOptions(
     // Incremental review: only look at commits pushed since the last review,
     // but keep anchoring (and validation) against the full PR diff.
     let reviewFiles = pr.files;
+    let changedSinceLastReview: Map<string, Set<number>> | null = null;
     if (!opts.dryRun && incremental && history?.lastReviewedSha) {
       try {
         const changed = await github.compareFiles(history.lastReviewedSha, pr.headSha);
+        changedSinceLastReview = new Map(changed.map((f) => [f.path, f.commentableLines]));
         const prPaths = new Set(pr.files.map((f) => f.path));
         reviewFiles = changed.filter((f) => prPaths.has(f.path));
         console.error(
@@ -209,9 +211,16 @@ addSharedOptions(
 
     let findingsToPost = result.findings;
     if (history) {
-      findingsToPost = result.findings.filter(
-        (f) => !history.commentedLocations.has(`${f.path}:${f.line}`),
-      );
+      findingsToPost = result.findings.filter((f) => {
+        // Same issue reposted at a shifted line — fingerprint catches it.
+        if (history.fingerprints.has(`${f.path}|${findingFingerprint(f)}`)) return false;
+        if (history.commentedLocations.has(`${f.path}:${f.line}`)) {
+          // Same location, but if that line changed since the last review
+          // this is a finding about new code — post it.
+          return changedSinceLastReview?.get(f.path)?.has(f.line) ?? false;
+        }
+        return true;
+      });
       const skipped = result.findings.length - findingsToPost.length;
       if (skipped > 0) {
         console.error(`Skipping ${skipped} finding(s) already posted by a previous review.`);

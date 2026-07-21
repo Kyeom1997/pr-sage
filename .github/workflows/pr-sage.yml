@@ -13,9 +13,6 @@ jobs:
     # Secrets are unavailable on forked PRs; skip instead of failing.
     if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
       - uses: Kyeom1997/pr-sage@v1
         with:
           provider: gemini

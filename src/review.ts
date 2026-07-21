@@ -18,7 +18,7 @@ import {
   verifySystemPrompt,
   verifyUserPrompt,
 } from "./prompt.js";
-import { validateFindings } from "./diff.js";
+import { commentableLines, validateFindings } from "./diff.js";
 import { parseReviewResult, parseSummary, parseVerdicts } from "./validate.js";
 import { withRetry } from "./retry.js";
 import { PR_SAGE_MARKER, shaMarker } from "./github.js";
@@ -80,6 +80,49 @@ export function filterFiles(files: DiffFile[], exclude: string[]): DiffFile[] {
   );
 }
 
+/** Per-file patch size cap; larger files are split into hunk-level chunks. */
+export const MAX_FILE_PATCH_CHARS = 30_000;
+
+/**
+ * Split oversized file patches into multiple entries along hunk boundaries,
+ * so no part of a large diff is silently truncated away from review.
+ */
+export function splitOversizedFiles(
+  files: DiffFile[],
+  maxChars: number = MAX_FILE_PATCH_CHARS,
+): DiffFile[] {
+  const out: DiffFile[] = [];
+  for (const file of files) {
+    if (file.patch.length <= maxChars) {
+      out.push(file);
+      continue;
+    }
+    const hunks = file.patch.split(/^(?=@@ )/m).filter((h) => h.length > 0);
+    const chunks: string[] = [];
+    let current: string[] = [];
+    let size = 0;
+    for (const hunk of hunks) {
+      if (current.length > 0 && size + hunk.length > maxChars) {
+        chunks.push(current.join(""));
+        current = [];
+        size = 0;
+      }
+      current.push(hunk);
+      size += hunk.length;
+    }
+    if (current.length > 0) chunks.push(current.join(""));
+    chunks.forEach((patch, i) => {
+      out.push({
+        path: file.path,
+        status: chunks.length > 1 ? `${file.status}, part ${i + 1}/${chunks.length}` : file.status,
+        patch,
+        commentableLines: commentableLines(patch),
+      });
+    });
+  }
+  return out;
+}
+
 /** Split files into batches whose annotated patches fit the character budget. */
 export function batchFiles(files: DiffFile[], budget: number): DiffFile[][] {
   const batches: DiffFile[][] = [];
@@ -119,7 +162,7 @@ export async function runReview(
   target: ReviewTarget,
   options: ReviewOptions,
 ): Promise<{ result: ReviewResult; dropped: Finding[] }> {
-  const files = filterFiles(target.files, options.exclude);
+  const files = splitOversizedFiles(filterFiles(target.files, options.exclude));
   if (files.length === 0) {
     return {
       result: {
