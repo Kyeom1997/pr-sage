@@ -11,6 +11,11 @@ const REQUIRED_ENV: Record<ProviderName, string> = {
 
 export function createProvider(name: ProviderName, model?: string): Provider {
   const envVar = REQUIRED_ENV[name];
+  // Self-hosted OpenAI-compatible endpoints (Ollama, vLLM, LM Studio) often
+  // need no real key — OPENAI_BASE_URL being set is authorization enough.
+  if (name === "openai" && process.env.OPENAI_BASE_URL && !process.env.OPENAI_API_KEY) {
+    process.env.OPENAI_API_KEY = "self-hosted";
+  }
   if (!process.env[envVar]) {
     throw new Error(`${envVar} is not set (required for provider "${name}").`);
   }

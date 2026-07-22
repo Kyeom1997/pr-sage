@@ -18,7 +18,13 @@ export const REVIEW_SCHEMA = {
           line: {
             type: "integer",
             description:
-              "First (or only) new-file line number the finding anchors to. Must be a numbered line from the annotated diff.",
+              "First (or only) line number the finding anchors to. For side \"added\" use a plain-numbered line; for side \"removed\" use a number carrying the \"-\" marker in the annotated diff.",
+          },
+          side: {
+            type: "string",
+            enum: ["added", "removed"],
+            description:
+              "\"added\" (default) anchors to new/context lines; \"removed\" anchors to a deleted line (its old-file number, shown with a trailing \"-\" in the diff).",
           },
           endLine: {
             type: "integer",
@@ -94,7 +100,8 @@ What to look for, in priority order:
 
 Rules:
 - Only comment on lines that carry a number in the annotated diff. Use that exact number as "line".
-- A finding may span multiple consecutive numbered lines: set "line" to the first and "endLine" to the last. A suggestion then replaces that whole range.
+- Deleted lines are numbered with a trailing "-" (their OLD-file number). To flag a problematic deletion (e.g. removed validation or error handling), set side to "removed" and use that number. Deleted-line findings cannot carry suggestions or ranges.
+- A finding may span multiple consecutive numbered right-side lines: set "line" to the first and "endLine" to the last. A suggestion then replaces that whole range.
 - Judge the change in context; do not flag pre-existing code unless the change makes it worse.
 - No generic advice ("consider adding tests") without pointing at something specific.
 - Do not praise line-by-line; positive notes belong in the summary only.
@@ -152,7 +159,15 @@ export function renderFiles(files: DiffFile[], contents?: Map<string, string>): 
     .join("\n\n");
 }
 
-export function userPrompt(title: string, body: string, filesText: string): string {
+export function userPrompt(
+  title: string,
+  body: string,
+  filesText: string,
+  priorContext?: string,
+): string {
   const description = body.trim() ? body.trim() : "(no description)";
-  return `## Pull request: ${title}\n\n${description}\n\n## Diff\n\n${filesText}`;
+  const prior = priorContext
+    ? `\n\n## Context from earlier batches of this same change (already reviewed — do not repeat their findings, but use them to judge cross-file consistency)\n\n${priorContext}`
+    : "";
+  return `## Pull request: ${title}\n\n${description}${prior}\n\n## Diff\n\n${filesText}`;
 }

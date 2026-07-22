@@ -1,0 +1,104 @@
+{
+  "mode": "recall",
+  "provider": "gemini",
+  "model": "gemini-flash-lite-latest",
+  "args": {
+    "repos": "fastify/fastify",
+    "per-repo": "2",
+    "max-files": "15",
+    "mode": "recall",
+    "provider": "gemini",
+    "model": "gemini-flash-lite-latest",
+    "batch-chars": "25000"
+  },
+  "summary": {
+    "mode": "recall",
+    "prs": 2,
+    "humanComments": 8,
+    "matched": 0,
+    "approxRecall": 0,
+    "prSageFindingsTotal": 0
+  },
+  "results": [],
+  "recallResults": [
+    {
+      "repo": "fastify/fastify",
+      "pr": 6785,
+      "url": "https://github.com/fastify/fastify/pull/6785",
+      "title": "docs(ecosystem): add @thecodepace/fastify-http-query",
+      "files": 1,
+      "humanComments": [
+        {
+          "path": "docs/Guides/Ecosystem.md",
+          "line": 237,
+          "author": "Puppo",
+          "excerpt": "```suggestion   method with a body). ```",
+          "hit": false
+        }
+      ],
+      "hits": 0,
+      "prSageFindings": []
+    },
+    {
+      "repo": "fastify/fastify",
+      "pr": 6832,
+      "url": "https://github.com/fastify/fastify/pull/6832",
+      "title": "feat: rfc10008 http query method",
+      "files": 14,
+      "humanComments": [
+        {
+          "path": "lib/errors.js",
+          "line": 453,
+          "author": "climba03003",
+          "excerpt": "It allows future method that requires the same requirement of `query`.",
+          "hit": false
+        },
+        {
+          "path": "lib/handle-request.js",
+          "line": 45,
+          "author": "jsumners",
+          "excerpt": "I have a suspicion that the parsed content-type header object should be used here.",
+          "hit": false
+        },
+        {
+          "path": "lib/handle-request.js",
+          "line": 62,
+          "author": "jsumners",
+          "excerpt": "This is only validating one part of the \"is missing or is inconsistent with the request content.\" requirement. So, technically, in order for us to provide suppo",
+          "hit": false
+        },
+        {
+          "path": "lib/handle-request.js",
+          "line": 112,
+          "author": "jsumners",
+          "excerpt": "There should be a docblock on this at least. It doesn't really seem reusable, because the content is clearly tied to the new method, so it really doesn't need t",
+          "hit": false
+        },
+        {
+          "path": "lib/handle-request.js",
+          "line": 112,
+          "author": "climba03003",
+          "excerpt": "This function is used in two place. 1. Used to check whether using the Content-Type parser. 2. Used in Query method.  I extract it as a function because I do no",
+          "hit": false
+        },
+        {
+          "path": "lib/handle-request.js",
+          "line": 62,
+          "author": "climba03003",
+          "excerpt": "It is partially addressed the `missing` part, for the `inconsistent` part is handled by content type parser. You can check the test `should return 400 if invali",
+          "hit": false
+        },
+        {
+          "path": "lib/handle-request.js",
+          "line": 45,
+          "author": "climba03003",
+          "excerpt": "Invalid or Unsupported Content-Type header is checked in later stage. It is the function we already have.",
+          "hit": false
+        }
+      ],
+      "hits": 0,
+      "prSageFindings": []
+    }
+  ],
+  "failures": []
+}

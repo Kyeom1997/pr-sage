@@ -9,7 +9,7 @@ Most AI reviewers re-review the whole PR on every push and repeat themselves unt
 - 📏 **Your rules, not generic advice.** `.pr-sage.json` instructions plus automatic `CLAUDE.md`/`CONTRIBUTING.md` injection make reviews follow team conventions.
 - 🚦 **A quality gate, not just commentary.** `--fail-on critical` blocks merges; `--event auto` approves clean PRs and requests changes on real problems.
 - 🖥️ **Reviews before the PR exists.** `pr-sage local` reviews your `git diff` pre-push — no server, no PR, no GitHub token.
-- 🔐 **Your keys, your data path.** No server, nothing stored; code goes only to the provider you choose — **Claude, OpenAI, or Gemini** ([SECURITY.md](SECURITY.md)).
+- 🔐 **Your keys, your data path.** No server, nothing stored; code goes only to the provider you choose — **Claude, OpenAI, or Gemini** — or never leaves your machine at all with a **self-hosted OpenAI-compatible endpoint** (Ollama, vLLM, LM Studio). See [SECURITY.md](SECURITY.md).
 
 Ships as a **CLI**, a **GitHub Action**, and a **TypeScript library**.
 
@@ -68,6 +68,20 @@ Required environment variables: `GITHUB_TOKEN` (with `pull_requests: write`), pl
 
 On repeat runs (e.g. new commits pushed to the PR), pr-sage reviews **only the commits pushed since its last review** (incremental mode), skips findings it has already commented, and posts nothing when there is nothing new — no duplicate-comment spam, no wasted tokens. If your repo has a `CLAUDE.md` or `CONTRIBUTING.md`, it is automatically injected as review context (disable with `"repoContext": false`). GitHub Enterprise works out of the box via `$GITHUB_API_URL` or the `githubApiUrl` config field.
 
+Each run prints its token usage to stderr (`LLM usage: N call(s), X input / Y output tokens`) so cost stays visible.
+
+## Self-hosted / local models
+
+Point the OpenAI provider at any OpenAI-compatible server and private code never leaves your machine — no API key required:
+
+```bash
+ollama pull qwen2.5-coder:14b
+OPENAI_BASE_URL=http://localhost:11434/v1 \
+  npx pr-sage review --repo owner/repo --pr 123 --provider openai --model qwen2.5-coder:14b
+```
+
+Works the same with vLLM, LM Studio, or any gateway that speaks the OpenAI chat completions API.
+
 ## Configuration file
 
 Put a `.pr-sage.json` in the directory you run from (CLI flags override it):
@@ -119,6 +133,8 @@ jobs:
 node scripts/bench.mjs --repos fastify/fastify --per-repo 5 --provider gemini
 ```
 
+`--mode recall` measures the other axis: it picks merged PRs that received human review comments, reviews each PR's **first commit** (the state humans reviewed), and reports how many human-flagged locations pr-sage also flags — with a side-by-side sheet for manual verification.
+
 ### Measured (2026-07, 28 PRs)
 
 28 recently merged PRs across **fastify, hono, GitHub CLI, and Vite** (`gemini-flash-lite`, zero run failures):
@@ -133,7 +149,7 @@ Raw results and the per-finding verification notes live in [`bench-results/`](be
 ## How it works
 
 1. Fetches the PR metadata and per-file patches from the GitHub API.
-2. Annotates each diff line with its new-file line number and filters out lockfiles/build artifacts.
+2. Annotates both sides of the diff — added/context lines with new-file numbers, deleted lines with old-file numbers — so findings can anchor to removed code too (e.g. "this deleted validation was still needed"). Lockfiles/build artifacts are filtered out.
 3. Asks the LLM for a structured review (JSON schema — no parsing heuristics): summary + findings with `path`, `line`, `severity`, and an optional single-line suggestion.
 4. Validates every finding at runtime (zod) and against the diff (GitHub rejects reviews that comment on lines outside the diff), demotes unsafe multi-line suggestions, skips findings already posted by a previous run, retries on provider rate limits, and posts one review: inline comments + summary.
 

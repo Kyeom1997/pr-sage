@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { DiffFile } from "./types.js";
-import { commentableLines } from "./diff.js";
+import { commentableLines, commentableOldLines } from "./diff.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -23,6 +23,7 @@ export function parseUnifiedDiff(text: string): DiffFile[] {
       status: chunk.includes("\nnew file mode") ? "added" : "modified",
       patch,
       commentableLines: commentableLines(patch),
+      commentableOldLines: commentableOldLines(patch),
     });
   }
   return files;

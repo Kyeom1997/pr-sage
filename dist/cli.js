@@ -40116,14 +40116,14 @@ function useColor() {
 var program = new Command();
 
 // src/diff.ts
-var HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+var HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 function commentableLines(patch) {
   const lines = /* @__PURE__ */ new Set();
   let newLine = 0;
   for (const raw of patch.split("\n")) {
     const hunk = raw.match(HUNK_HEADER);
     if (hunk) {
-      newLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
       continue;
     }
     if (raw.startsWith("+")) {
@@ -40138,51 +40138,134 @@ function commentableLines(patch) {
   }
   return lines;
 }
-function annotatePatch(patch) {
-  const out = [];
+function commentableOldLines(patch) {
+  const lines = /* @__PURE__ */ new Set();
+  let oldLine = 0;
+  for (const raw of patch.split("\n")) {
+    const hunk = raw.match(HUNK_HEADER);
+    if (hunk) {
+      oldLine = Number(hunk[1]);
+      continue;
+    }
+    if (raw.startsWith("-")) {
+      lines.add(oldLine);
+      oldLine++;
+    } else if (raw.startsWith("+") || raw.startsWith("\\") || raw === "") {
+    } else {
+      oldLine++;
+    }
+  }
+  return lines;
+}
+function rightLineTexts(patch) {
+  const texts = /* @__PURE__ */ new Map();
   let newLine = 0;
   for (const raw of patch.split("\n")) {
     const hunk = raw.match(HUNK_HEADER);
     if (hunk) {
-      newLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
+      continue;
+    }
+    if (raw.startsWith("-") || raw.startsWith("\\") || raw === "") continue;
+    texts.set(newLine, raw.slice(1));
+    newLine++;
+  }
+  return texts;
+}
+function annotatePatch(patch) {
+  const out = [];
+  let newLine = 0;
+  let oldLine = 0;
+  for (const raw of patch.split("\n")) {
+    const hunk = raw.match(HUNK_HEADER);
+    if (hunk) {
+      oldLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
       out.push(raw);
       continue;
     }
-    if (raw.startsWith("-") || raw.startsWith("\\") || raw === "") {
-      out.push(raw === "" ? raw : `      ${raw}`);
+    if (raw === "" || raw.startsWith("\\")) {
+      out.push(raw);
+    } else if (raw.startsWith("-")) {
+      out.push(`${String(oldLine).padStart(5)}- ${raw}`);
+      oldLine++;
     } else {
       out.push(`${String(newLine).padStart(5)} ${raw}`);
       newLine++;
+      if (!raw.startsWith("+")) oldLine++;
     }
   }
   return out.join("\n");
 }
 var MAX_RANGE_LINES = 50;
 function validateFindings(findings, files) {
-  const linesByPath = /* @__PURE__ */ new Map();
+  const rightByPath = /* @__PURE__ */ new Map();
+  const leftByPath = /* @__PURE__ */ new Map();
+  const patchesByPath = /* @__PURE__ */ new Map();
   for (const file2 of files) {
-    const existing = linesByPath.get(file2.path);
-    if (existing) {
-      for (const n of file2.commentableLines) existing.add(n);
-    } else {
-      linesByPath.set(file2.path, new Set(file2.commentableLines));
-    }
+    mergeSet(rightByPath, file2.path, file2.commentableLines);
+    if (file2.commentableOldLines) mergeSet(leftByPath, file2.path, file2.commentableOldLines);
+    const patches = patchesByPath.get(file2.path);
+    if (patches) patches.push(file2.patch);
+    else patchesByPath.set(file2.path, [file2.patch]);
   }
+  const textCache = /* @__PURE__ */ new Map();
+  const lineText = (path8, line) => {
+    let texts = textCache.get(path8);
+    if (!texts) {
+      texts = /* @__PURE__ */ new Map();
+      for (const patch of patchesByPath.get(path8) ?? []) {
+        for (const [n, t2] of rightLineTexts(patch)) texts.set(n, t2);
+      }
+      textCache.set(path8, texts);
+    }
+    return texts.get(line);
+  };
   const valid = [];
   const dropped = [];
-  for (const finding of findings) {
-    const lines = linesByPath.get(finding.path);
+  for (let finding of findings) {
+    if ((finding.side ?? "added") === "removed") {
+      const lines2 = leftByPath.get(finding.path);
+      if (!lines2 || !lines2.has(finding.line)) {
+        dropped.push(finding);
+        continue;
+      }
+      valid.push({ ...finding, endLine: void 0 });
+      continue;
+    }
+    const lines = rightByPath.get(finding.path);
     if (!lines || !lines.has(finding.line)) {
       dropped.push(finding);
       continue;
     }
     if (finding.endLine !== void 0 && !isValidRange(finding, lines)) {
-      valid.push({ ...finding, endLine: void 0 });
-    } else {
-      valid.push(finding);
+      finding = { ...finding, endLine: void 0 };
     }
+    if (finding.suggestion !== void 0 && isNoopSuggestion(finding, lineText)) {
+      const { suggestion: _dropped, ...rest } = finding;
+      finding = rest;
+    }
+    valid.push(finding);
   }
   return { valid, dropped };
+}
+function mergeSet(map2, key, values) {
+  const existing = map2.get(key);
+  if (existing) {
+    for (const v of values) existing.add(v);
+  } else {
+    map2.set(key, new Set(values));
+  }
+}
+function isNoopSuggestion(finding, lineText) {
+  const end = finding.endLine ?? finding.line;
+  const current = [];
+  for (let n = finding.line; n <= end; n++) {
+    const text = lineText(finding.path, n);
+    if (text === void 0) return false;
+    current.push(text);
+  }
+  return current.join("\n").trim() === finding.suggestion.trim();
 }
 function isValidRange(finding, lines) {
   const end = finding.endLine;
@@ -40201,7 +40284,8 @@ function shaMarker(sha) {
 var SHA_MARKER_RE = /<!-- pr-sage sha:([0-9a-f]{6,40}) -->/;
 var FP_MARKER_RE = /<!-- pr-sage fp:([0-9a-z]+) -->/;
 function findingFingerprint(f3) {
-  const input = `${f3.path}|${f3.title.toLowerCase().replace(/\s+/g, " ").trim()}`;
+  const title = f3.title.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+  const input = `${f3.path}|${title}`;
   let hash2 = 5381;
   for (let i2 = 0; i2 < input.length; i2++) {
     hash2 = (hash2 << 5) + hash2 + input.charCodeAt(i2) >>> 0;
@@ -40228,21 +40312,28 @@ var GitHubClient = class {
   baseUrl;
   fetchImpl;
   async request(path8, init) {
-    const res = await this.fetchImpl(`${this.baseUrl}${path8}`, {
-      ...init,
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${this.token}`,
-        "X-GitHub-Api-Version": "2022-11-28",
-        ...init?.body ? { "Content-Type": "application/json" } : {},
-        ...init?.headers
-      }
-    });
-    if (!res.ok) {
+    for (let attempt = 0; ; attempt++) {
+      const res = await this.fetchImpl(`${this.baseUrl}${path8}`, {
+        ...init,
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${this.token}`,
+          "X-GitHub-Api-Version": "2022-11-28",
+          ...init?.body ? { "Content-Type": "application/json" } : {},
+          ...init?.headers
+        }
+      });
+      if (res.ok) return await res.json();
       const text = await res.text();
+      const rateLimited = res.status === 429 || res.status === 403 && /rate limit/i.test(text);
+      if (rateLimited && attempt < 3) {
+        const retryAfter = Number(res.headers.get("retry-after"));
+        const delay2 = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1e3 : 2e3 * 2 ** attempt;
+        await new Promise((resolve5) => setTimeout(resolve5, Math.min(delay2, 6e4)));
+        continue;
+      }
       throw new Error(`GitHub API ${res.status} on ${path8}: ${text}`);
     }
-    return await res.json();
   }
   async fetchPullRequest(prNumber) {
     const pr = await this.request(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}`);
@@ -40255,7 +40346,8 @@ var GitHubClient = class {
           path: f3.filename,
           status: f3.status,
           patch: f3.patch,
-          commentableLines: commentableLines(f3.patch)
+          commentableLines: commentableLines(f3.patch),
+          commentableOldLines: commentableOldLines(f3.patch)
         });
       }
       if (batch.length < 100) break;
@@ -40272,11 +40364,15 @@ var GitHubClient = class {
   /** Files changed between two commits (for incremental review). */
   async compareFiles(baseSha, headSha) {
     const cmp = await this.request(`/repos/${this.owner}/${this.repo}/compare/${baseSha}...${headSha}`);
+    if ((cmp.files?.length ?? 0) >= 300) {
+      throw new Error("compare listing truncated at 300 files");
+    }
     return (cmp.files ?? []).filter((f3) => f3.patch).map((f3) => ({
       path: f3.filename,
       status: f3.status,
       patch: f3.patch,
-      commentableLines: commentableLines(f3.patch)
+      commentableLines: commentableLines(f3.patch),
+      commentableOldLines: commentableOldLines(f3.patch)
     }));
   }
   /** Fetch a file's content at a given ref. Returns null for binary/oversized/missing files. */
@@ -40320,7 +40416,7 @@ ${content.slice(0, 6e3)}`);
       const batch = await this.request(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}/comments?per_page=100&page=${page}`);
       for (const c of batch) {
         if (c.line !== null && c.body.includes(PR_SAGE_MARKER)) {
-          commentedLocations.add(`${c.path}:${c.line}`);
+          commentedLocations.add(`${c.path}:${c.side ?? "RIGHT"}:${c.line}`);
           const fp = c.body.match(FP_MARKER_RE)?.[1];
           if (fp) fingerprints.add(`${c.path}|${fp}`);
         }
@@ -40351,12 +40447,14 @@ ${content.slice(0, 6e3)}`);
         body: JSON.stringify({
           event: ev,
           body: summary,
-          comments: findings.map((f3) => ({
-            path: f3.path,
-            body: formatComment(f3),
-            side: "RIGHT",
-            ...f3.endLine !== void 0 && f3.endLine > f3.line ? { start_line: f3.line, start_side: "RIGHT", line: f3.endLine } : { line: f3.line }
-          }))
+          comments: findings.map(
+            (f3) => (f3.side ?? "added") === "removed" ? { path: f3.path, body: formatComment(f3), side: "LEFT", line: f3.line } : {
+              path: f3.path,
+              body: formatComment(f3),
+              side: "RIGHT",
+              ...f3.endLine !== void 0 && f3.endLine > f3.line ? { start_line: f3.line, start_side: "RIGHT", line: f3.endLine } : { line: f3.line }
+            }
+          )
         })
       }
     );
@@ -73143,6 +73241,9 @@ var REQUIRED_ENV = {
 };
 function createProvider(name, model) {
   const envVar = REQUIRED_ENV[name];
+  if (name === "openai" && process.env.OPENAI_BASE_URL && !process.env.OPENAI_API_KEY) {
+    process.env.OPENAI_API_KEY = "self-hosted";
+  }
   if (!process.env[envVar]) {
     throw new Error(`${envVar} is not set (required for provider "${name}").`);
   }
@@ -73181,7 +73282,12 @@ var REVIEW_SCHEMA = {
           path: { type: "string", description: "Repo-relative file path exactly as shown in the diff." },
           line: {
             type: "integer",
-            description: "First (or only) new-file line number the finding anchors to. Must be a numbered line from the annotated diff."
+            description: 'First (or only) line number the finding anchors to. For side "added" use a plain-numbered line; for side "removed" use a number carrying the "-" marker in the annotated diff.'
+          },
+          side: {
+            type: "string",
+            enum: ["added", "removed"],
+            description: '"added" (default) anchors to new/context lines; "removed" anchors to a deleted line (its old-file number, shown with a trailing "-" in the diff).'
           },
           endLine: {
             type: "integer",
@@ -73253,7 +73359,8 @@ What to look for, in priority order:
 
 Rules:
 - Only comment on lines that carry a number in the annotated diff. Use that exact number as "line".
-- A finding may span multiple consecutive numbered lines: set "line" to the first and "endLine" to the last. A suggestion then replaces that whole range.
+- Deleted lines are numbered with a trailing "-" (their OLD-file number). To flag a problematic deletion (e.g. removed validation or error handling), set side to "removed" and use that number. Deleted-line findings cannot carry suggestions or ranges.
+- A finding may span multiple consecutive numbered right-side lines: set "line" to the first and "endLine" to the last. A suggestion then replaces that whole range.
 - Judge the change in context; do not flag pre-existing code unless the change makes it worse.
 - No generic advice ("consider adding tests") without pointing at something specific.
 - Do not praise line-by-line; positive notes belong in the summary only.
@@ -73317,11 +73424,16 @@ ${body}
     return block;
   }).join("\n\n");
 }
-function userPrompt(title, body, filesText) {
+function userPrompt(title, body, filesText, priorContext) {
   const description = body.trim() ? body.trim() : "(no description)";
+  const prior = priorContext ? `
+
+## Context from earlier batches of this same change (already reviewed \u2014 do not repeat their findings, but use them to judge cross-file consistency)
+
+${priorContext}` : "";
   return `## Pull request: ${title}
 
-${description}
+${description}${prior}
 
 ## Diff
 
@@ -87846,6 +87958,7 @@ config(en_default());
 var findingSchema = external_exports.object({
   path: external_exports.string().min(1),
   line: external_exports.number().int().positive(),
+  side: external_exports.enum(["added", "removed"]).optional(),
   endLine: external_exports.number().int().positive().optional(),
   severity: external_exports.enum(SEVERITIES),
   title: external_exports.string().min(1),
@@ -87960,7 +88073,8 @@ function splitOversizedFiles(files, maxChars = MAX_FILE_PATCH_CHARS) {
         path: file2.path,
         status: chunks.length > 1 ? `${file2.status}, part ${i2 + 1}/${chunks.length}` : file2.status,
         patch,
-        commentableLines: commentableLines(patch)
+        commentableLines: commentableLines(patch),
+        commentableOldLines: commentableOldLines(patch)
       });
     });
   }
@@ -87985,6 +88099,14 @@ function batchFiles(files, budget) {
 function sanitizeFindings(findings) {
   return findings.map((f3) => {
     if (!f3.suggestion) return f3;
+    if ((f3.side ?? "added") === "removed") {
+      const { suggestion: dropped, ...rest2 } = f3;
+      return { ...rest2, body: `${f3.body}
+
+\`\`\`
+${dropped.replace(/\n+$/, "")}
+\`\`\`` };
+    }
     const suggestion = f3.suggestion.replace(/\n+$/, "");
     if (f3.endLine !== void 0 && f3.endLine > f3.line) return { ...f3, suggestion };
     if (!suggestion.includes("\n")) return { ...f3, suggestion };
@@ -88027,9 +88149,14 @@ ${PR_SAGE_MARKER}`,
         if (content !== null) contents.set(file2.path, content);
       }
     }
+    const priorContext = summaries.length > 0 ? summaries.join("\n\n") : void 0;
     const filesText = renderFiles(batch, contents);
     const raw = await withRetry(
-      () => provider.generate(system, userPrompt(target.title, target.body, filesText), REVIEW_SCHEMA),
+      () => provider.generate(
+        system,
+        userPrompt(target.title, target.body, filesText, priorContext),
+        REVIEW_SCHEMA
+      ),
       { log: options.log }
     );
     const result = parseReviewResult(raw, options.log);
@@ -88191,7 +88318,8 @@ function parseUnifiedDiff(text) {
       path: path8,
       status: chunk.includes("\nnew file mode") ? "added" : "modified",
       patch,
-      commentableLines: commentableLines(patch)
+      commentableLines: commentableLines(patch),
+      commentableOldLines: commentableOldLines(patch)
     });
   }
   return files;
@@ -88304,6 +88432,14 @@ async function resolveCommon(opts) {
     output
   };
 }
+function reportUsage(provider) {
+  const usage = provider.usage;
+  if (usage && usage.calls > 0) {
+    console.error(
+      `LLM usage: ${usage.calls} call(s), ${usage.inputTokens} input / ${usage.outputTokens} output tokens`
+    );
+  }
+}
 function printResult(result, provider, output) {
   if (output === "json") {
     console.log(toJson(result, provider));
@@ -88389,6 +88525,7 @@ addSharedOptions(
       anchorFiles: pr.files,
       fetchContent: settings.context === "full" ? (path8) => github.fetchFileContent(path8, pr.headSha) : void 0
     });
+    reportUsage(provider);
     const gateTripped = settings.failOn !== void 0 && result.findings.some((f3) => severityAtLeast(f3.severity, settings.failOn));
     if (opts.dryRun) {
       printResult(result, provider, settings.output);
@@ -88398,7 +88535,8 @@ addSharedOptions(
     if (history) {
       findingsToPost = result.findings.filter((f3) => {
         if (history.fingerprints.has(`${f3.path}|${findingFingerprint(f3)}`)) return false;
-        if (history.commentedLocations.has(`${f3.path}:${f3.line}`)) {
+        const side = (f3.side ?? "added") === "removed" ? "LEFT" : "RIGHT";
+        if (history.commentedLocations.has(`${f3.path}:${side}:${f3.line}`)) {
           return changedSinceLastReview?.get(f3.path)?.has(f3.line) ?? false;
         }
         return true;
@@ -88460,6 +88598,7 @@ ${content.slice(0, 6e3)}`);
       verify: settings.verify,
       fetchContent: settings.context === "full" ? (path8) => readFile3(path8, "utf8").catch(() => null) : void 0
     });
+    reportUsage(provider);
     printResult(result, provider, settings.output);
     const gateTripped = settings.failOn !== void 0 && result.findings.some((f3) => severityAtLeast(f3.severity, settings.failOn));
     finish(gateTripped, settings.failOn);
