@@ -92,6 +92,15 @@ async function resolveCommon(opts: Record<string, unknown>): Promise<CommonSetti
   };
 }
 
+function reportUsage(provider: Provider): void {
+  const usage = provider.usage;
+  if (usage && usage.calls > 0) {
+    console.error(
+      `LLM usage: ${usage.calls} call(s), ${usage.inputTokens} input / ${usage.outputTokens} output tokens`,
+    );
+  }
+}
+
 function printResult(result: ReviewResult, provider: Provider, output: OutputFormat): void {
   if (output === "json") {
     console.log(toJson(result, provider));
@@ -200,6 +209,7 @@ addSharedOptions(
           : undefined,
     });
 
+    reportUsage(provider);
     const gateTripped =
       settings.failOn !== undefined &&
       result.findings.some((f) => severityAtLeast(f.severity, settings.failOn!));
@@ -214,7 +224,8 @@ addSharedOptions(
       findingsToPost = result.findings.filter((f) => {
         // Same issue reposted at a shifted line — fingerprint catches it.
         if (history.fingerprints.has(`${f.path}|${findingFingerprint(f)}`)) return false;
-        if (history.commentedLocations.has(`${f.path}:${f.line}`)) {
+        const side = (f.side ?? "added") === "removed" ? "LEFT" : "RIGHT";
+        if (history.commentedLocations.has(`${f.path}:${side}:${f.line}`)) {
           // Same location, but if that line changed since the last review
           // this is a finding about new code — post it.
           return changedSinceLastReview?.get(f.path)?.has(f.line) ?? false;
@@ -290,6 +301,7 @@ addSharedOptions(
           : undefined,
     });
 
+    reportUsage(provider);
     printResult(result, provider, settings.output);
     const gateTripped =
       settings.failOn !== undefined &&

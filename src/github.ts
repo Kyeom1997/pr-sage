@@ -1,5 +1,5 @@
 import type { DiffFile, Finding, PullRequestInfo, ReviewEvent } from "./types.js";
-import { commentableLines } from "./diff.js";
+import { commentableLines, commentableOldLines } from "./diff.js";
 
 /** Hidden marker identifying comments posted by pr-sage (used for dedup). */
 export const PR_SAGE_MARKER = "<!-- pr-sage -->";
@@ -18,7 +18,14 @@ const FP_MARKER_RE = /<!-- pr-sage fp:([0-9a-z]+) -->/;
  * commits move it to a different line.
  */
 export function findingFingerprint(f: Pick<Finding, "path" | "title">): string {
-  const input = `${f.path}|${f.title.toLowerCase().replace(/\s+/g, " ").trim()}`;
+  // Strip punctuation/backticks so a lightly rephrased title (e.g. added
+  // quotes) still maps to the same fingerprint.
+  const title = f.title
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const input = `${f.path}|${title}`;
   let hash = 5381;
   for (let i = 0; i < input.length; i++) {
     hash = ((hash << 5) + hash + input.charCodeAt(i)) >>> 0;
@@ -50,21 +57,33 @@ export class GitHubClient {
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
-      ...init,
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${this.token}`,
-        "X-GitHub-Api-Version": "2022-11-28",
-        ...(init?.body ? { "Content-Type": "application/json" } : {}),
-        ...init?.headers,
-      },
-    });
-    if (!res.ok) {
+    for (let attempt = 0; ; attempt++) {
+      const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        ...init,
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${this.token}`,
+          "X-GitHub-Api-Version": "2022-11-28",
+          ...(init?.body ? { "Content-Type": "application/json" } : {}),
+          ...init?.headers,
+        },
+      });
+      if (res.ok) return (await res.json()) as T;
+
       const text = await res.text();
+      // Primary (429) and secondary (403 + message) rate limits are transient.
+      const rateLimited =
+        res.status === 429 || (res.status === 403 && /rate limit/i.test(text));
+      if (rateLimited && attempt < 3) {
+        const retryAfter = Number(res.headers.get("retry-after"));
+        const delay = Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : 2000 * 2 ** attempt;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(delay, 60_000)));
+        continue;
+      }
       throw new Error(`GitHub API ${res.status} on ${path}: ${text}`);
     }
-    return (await res.json()) as T;
   }
 
   async fetchPullRequest(prNumber: number): Promise<PullRequestInfo> {
@@ -88,6 +107,7 @@ export class GitHubClient {
           status: f.status,
           patch: f.patch,
           commentableLines: commentableLines(f.patch),
+          commentableOldLines: commentableOldLines(f.patch),
         });
       }
       if (batch.length < 100) break;
@@ -108,6 +128,11 @@ export class GitHubClient {
     const cmp = await this.request<{
       files?: Array<{ filename: string; status: string; patch?: string }>;
     }>(`/repos/${this.owner}/${this.repo}/compare/${baseSha}...${headSha}`);
+    // The compare API silently caps at 300 files; a capped listing would make
+    // an incremental review skip changes, so force a full-review fallback.
+    if ((cmp.files?.length ?? 0) >= 300) {
+      throw new Error("compare listing truncated at 300 files");
+    }
     return (cmp.files ?? [])
       .filter((f) => f.patch)
       .map((f) => ({
@@ -115,6 +140,7 @@ export class GitHubClient {
         status: f.status,
         patch: f.patch!,
         commentableLines: commentableLines(f.patch!),
+        commentableOldLines: commentableOldLines(f.patch!),
       }));
   }
 
@@ -154,6 +180,7 @@ export class GitHubClient {
    * commit the most recent one covered (for incremental review).
    */
   async fetchPrSageHistory(prNumber: number): Promise<{
+    /** `${path}:${SIDE}:${line}` of previously posted pr-sage comments. */
     commentedLocations: Set<string>;
     /** `${path}|${fingerprint}` of previously posted findings (line-shift-proof). */
     fingerprints: Set<string>;
@@ -164,11 +191,11 @@ export class GitHubClient {
     const fingerprints = new Set<string>();
     for (let page = 1; ; page++) {
       const batch = await this.request<
-        Array<{ path: string; line: number | null; body: string }>
+        Array<{ path: string; line: number | null; side?: string | null; body: string }>
       >(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}/comments?per_page=100&page=${page}`);
       for (const c of batch) {
         if (c.line !== null && c.body.includes(PR_SAGE_MARKER)) {
-          commentedLocations.add(`${c.path}:${c.line}`);
+          commentedLocations.add(`${c.path}:${c.side ?? "RIGHT"}:${c.line}`);
           const fp = c.body.match(FP_MARKER_RE)?.[1];
           if (fp) fingerprints.add(`${c.path}|${fp}`);
         }
@@ -208,14 +235,18 @@ export class GitHubClient {
           body: JSON.stringify({
             event: ev,
             body: summary,
-            comments: findings.map((f) => ({
-              path: f.path,
-              body: formatComment(f),
-              side: "RIGHT",
-              ...(f.endLine !== undefined && f.endLine > f.line
-                ? { start_line: f.line, start_side: "RIGHT", line: f.endLine }
-                : { line: f.line }),
-            })),
+            comments: findings.map((f) =>
+              (f.side ?? "added") === "removed"
+                ? { path: f.path, body: formatComment(f), side: "LEFT", line: f.line }
+                : {
+                    path: f.path,
+                    body: formatComment(f),
+                    side: "RIGHT",
+                    ...(f.endLine !== undefined && f.endLine > f.line
+                      ? { start_line: f.line, start_side: "RIGHT", line: f.endLine }
+                      : { line: f.line }),
+                  },
+            ),
           }),
         },
       );

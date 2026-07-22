@@ -68,14 +68,20 @@ describe("GitHubClient.fetchPullRequest", () => {
 });
 
 describe("GitHubClient.postReview", () => {
-  it("sends single-line and range comments with the right payload shape", async () => {
+  it("sends single-line, range, and deleted-line comments with the right payload shape", async () => {
     const { impl, calls } = fakeFetch([{ json: { html_url: "https://x/1" } }]);
-    await client(impl).postReview(1, "sum", [finding(), finding({ line: 5, endLine: 8 })]);
+    await client(impl).postReview(1, "sum", [
+      finding(),
+      finding({ line: 5, endLine: 8 }),
+      finding({ line: 12, side: "removed", endLine: 20 }),
+    ]);
     const body = JSON.parse(String(calls[0]?.init?.body));
     expect(body.event).toBe("COMMENT");
     expect(body.comments[0]).toMatchObject({ path: "src/a.ts", line: 3, side: "RIGHT" });
     expect(body.comments[0].start_line).toBeUndefined();
     expect(body.comments[1]).toMatchObject({ start_line: 5, line: 8, start_side: "RIGHT" });
+    expect(body.comments[2]).toMatchObject({ side: "LEFT", line: 12 });
+    expect(body.comments[2].start_line).toBeUndefined();
     expect(body.comments[0].body).toContain("<!-- pr-sage -->");
     expect(body.comments[0].body).toContain("<!-- pr-sage fp:");
   });
@@ -112,7 +118,7 @@ describe("GitHubClient.fetchPrSageHistory", () => {
       },
     ]);
     const history = await client(impl).fetchPrSageHistory(1);
-    expect(history.commentedLocations).toEqual(new Set(["src/a.ts:3"]));
+    expect(history.commentedLocations).toEqual(new Set(["src/a.ts:RIGHT:3"]));
     expect(history.fingerprints).toEqual(new Set([`src/a.ts|${findingFingerprint(f)}`]));
     expect(history.hasReview).toBe(true);
     expect(history.lastReviewedSha).toBe("bbb222");
@@ -143,5 +149,11 @@ describe("findingFingerprint", () => {
     expect(findingFingerprint(finding({ title: "  T  " }))).toBe(findingFingerprint(finding({ title: "t" })));
     expect(findingFingerprint(finding())).not.toBe(findingFingerprint(finding({ title: "other" })));
     expect(findingFingerprint(finding())).not.toBe(findingFingerprint(finding({ path: "b.ts" })));
+  });
+
+  it("ignores punctuation so lightly rephrased titles still match", () => {
+    expect(findingFingerprint(finding({ title: "Use `res.ok` here!" }))).toBe(
+      findingFingerprint(finding({ title: "use res ok here" })),
+    );
   });
 });

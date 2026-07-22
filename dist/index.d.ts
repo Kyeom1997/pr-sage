@@ -7,8 +7,13 @@ declare function severityAtLeast(severity: Severity, threshold: Severity): boole
 interface Finding {
     /** Repo-relative path of the file the finding is in. */
     path: string;
-    /** 1-indexed line number in the NEW version of the file (first line of the range). */
+    /**
+     * 1-indexed line number. For side "added" (default) this is a NEW-file
+     * line; for side "removed" it is the OLD-file line of a deleted line.
+     */
     line: number;
+    /** Which side of the diff the finding anchors to. Default "added". */
+    side?: "added" | "removed";
     /** Optional last line of a multi-line finding; the comment spans line..endLine. */
     endLine?: number;
     severity: Severity;
@@ -26,8 +31,10 @@ interface DiffFile {
     path: string;
     status: string;
     patch: string;
-    /** New-file line numbers that appear in the diff and can carry a comment. */
+    /** New-file line numbers that appear in the diff and can carry a RIGHT comment. */
     commentableLines: Set<number>;
+    /** Old-file line numbers of deleted lines that can carry a LEFT comment. */
+    commentableOldLines?: Set<number>;
 }
 interface PullRequestInfo {
     title: string;
@@ -81,6 +88,7 @@ declare class GitHubClient {
      * commit the most recent one covered (for incremental review).
      */
     fetchPrSageHistory(prNumber: number): Promise<{
+        /** `${path}:${SIDE}:${line}` of previously posted pr-sage comments. */
         commentedLocations: Set<string>;
         /** `${path}|${fingerprint}` of previously posted findings (line-shift-proof). */
         fingerprints: Set<string>;
@@ -147,19 +155,20 @@ declare function runReview(provider: Provider, target: ReviewTarget, options: Re
 
 /**
  * Collect the new-file line numbers that appear in a unified diff patch.
- * GitHub only accepts inline review comments on these lines (side: RIGHT).
+ * GitHub accepts side:RIGHT inline review comments on these lines.
  */
 declare function commentableLines(patch: string): Set<number>;
 /**
- * Prefix each right-side diff line with its new-file line number so the
- * model can reference exact lines. Left-only (deleted) lines get no number.
+ * Prefix each right-side diff line with its new-file line number, and each
+ * deleted line with its OLD-file line number followed by a "-" marker, so
+ * the model can anchor findings on both sides of the diff.
  */
 declare function annotatePatch(patch: string): string;
 /**
  * Drop findings that reference files or lines not present in the diff —
  * GitHub rejects the whole review if any comment targets an invalid line.
- * Multi-line ranges whose span isn't fully in the diff are downgraded to
- * single-line findings rather than dropped.
+ * Also downgrades invalid multi-line ranges to single-line, and strips
+ * suggestions that are identical to the current code (no-op suggestions).
  */
 declare function validateFindings(findings: Finding[], files: DiffFile[]): {
     valid: Finding[];

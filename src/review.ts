@@ -18,7 +18,7 @@ import {
   verifySystemPrompt,
   verifyUserPrompt,
 } from "./prompt.js";
-import { commentableLines, validateFindings } from "./diff.js";
+import { commentableLines, commentableOldLines, validateFindings } from "./diff.js";
 import { parseReviewResult, parseSummary, parseVerdicts } from "./validate.js";
 import { withRetry } from "./retry.js";
 import { PR_SAGE_MARKER, shaMarker } from "./github.js";
@@ -117,6 +117,7 @@ export function splitOversizedFiles(
         status: chunks.length > 1 ? `${file.status}, part ${i + 1}/${chunks.length}` : file.status,
         patch,
         commentableLines: commentableLines(patch),
+        commentableOldLines: commentableOldLines(patch),
       });
     });
   }
@@ -149,6 +150,11 @@ export function batchFiles(files: DiffFile[], budget: number): DiffFile[][] {
 export function sanitizeFindings(findings: Finding[]): Finding[] {
   return findings.map((f) => {
     if (!f.suggestion) return f;
+    // GitHub suggestion blocks only apply to RIGHT-side lines.
+    if ((f.side ?? "added") === "removed") {
+      const { suggestion: dropped, ...rest } = f;
+      return { ...rest, body: `${f.body}\n\n\`\`\`\n${dropped.replace(/\n+$/, "")}\n\`\`\`` };
+    }
     const suggestion = f.suggestion.replace(/\n+$/, "");
     if (f.endLine !== undefined && f.endLine > f.line) return { ...f, suggestion };
     if (!suggestion.includes("\n")) return { ...f, suggestion };
@@ -195,9 +201,17 @@ export async function runReview(
       }
     }
 
+    // Later batches see earlier batches' summaries, so cross-file
+    // inconsistencies have at least a summary-level chance of being caught.
+    const priorContext = summaries.length > 0 ? summaries.join("\n\n") : undefined;
     const filesText = renderFiles(batch, contents);
     const raw = await withRetry(
-      () => provider.generate(system, userPrompt(target.title, target.body, filesText), REVIEW_SCHEMA),
+      () =>
+        provider.generate(
+          system,
+          userPrompt(target.title, target.body, filesText, priorContext),
+          REVIEW_SCHEMA,
+        ),
       { log: options.log },
     );
     const result = parseReviewResult(raw, options.log);

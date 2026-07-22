@@ -9,8 +9,13 @@ export function severityAtLeast(severity: Severity, threshold: Severity): boolea
 export interface Finding {
   /** Repo-relative path of the file the finding is in. */
   path: string;
-  /** 1-indexed line number in the NEW version of the file (first line of the range). */
+  /**
+   * 1-indexed line number. For side "added" (default) this is a NEW-file
+   * line; for side "removed" it is the OLD-file line of a deleted line.
+   */
   line: number;
+  /** Which side of the diff the finding anchors to. Default "added". */
+  side?: "added" | "removed";
   /** Optional last line of a multi-line finding; the comment spans line..endLine. */
   endLine?: number;
   severity: Severity;
@@ -30,8 +35,10 @@ export interface DiffFile {
   path: string;
   status: string;
   patch: string;
-  /** New-file line numbers that appear in the diff and can carry a comment. */
+  /** New-file line numbers that appear in the diff and can carry a RIGHT comment. */
   commentableLines: Set<number>;
+  /** Old-file line numbers of deleted lines that can carry a LEFT comment. */
+  commentableOldLines?: Set<number>;
 }
 
 export interface PullRequestInfo {

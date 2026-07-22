@@ -4,6 +4,7 @@ import { SEVERITIES, type Finding, type ReviewResult } from "./types.js";
 const findingSchema = z.object({
   path: z.string().min(1),
   line: z.number().int().positive(),
+  side: z.enum(["added", "removed"]).optional(),
   endLine: z.number().int().positive().optional(),
   severity: z.enum(SEVERITIES),
   title: z.string().min(1),
