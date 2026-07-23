@@ -26,6 +26,8 @@ const configSchema = z.strictObject({
   event: z.enum(["comment", "auto"]).optional(),
   /** Second model pass that rejects unconfirmed findings (doubles cost). */
   verify: z.boolean().optional(),
+  /** Behavior when the verification provider fails (default: abort). */
+  verifyFailure: z.enum(["abort", "keep", "drop"]).optional(),
   /** "text" (default), "json", or "sarif" stdout format. */
   output: z.enum(["text", "json", "sarif"]).optional(),
   /** Inject repo guideline docs (CLAUDE.md, CONTRIBUTING.md) into the prompt (default true). */
@@ -42,6 +44,20 @@ const configSchema = z.strictObject({
   skipWip: z.boolean().optional(),
   /** Abort the run once this many total LLM tokens have been spent (cost guard). */
   maxTokensPerRun: z.number().int().positive().optional(),
+  /** Fail CI when any part of the configured change could not be reviewed. */
+  failOnIncomplete: z.boolean().optional(),
+  /** Post a GitHub Check Run in addition to the PR review. */
+  checkRun: z.boolean().optional(),
+  /** Use a separate provider/model for the false-positive verification pass. */
+  verifyProvider: z.enum(["anthropic", "openai", "gemini"]).optional(),
+  verifyModel: z.string().optional(),
+  /** Optional path-specific review instructions and severity policies. */
+  pathRules: z.array(z.strictObject({
+    paths: z.array(z.string()).min(1),
+    instructions: z.string().optional(),
+    minSeverity: z.enum(SEVERITIES).optional(),
+    failOn: z.enum(SEVERITIES).optional(),
+  })).optional(),
 });
 
 export type PrSageConfig = z.infer<typeof configSchema>;

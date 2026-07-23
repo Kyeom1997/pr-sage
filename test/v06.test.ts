@@ -81,6 +81,12 @@ describe("token budget guard", () => {
     );
     expect(usage.calls).toBe(1);
     expect(result.summary).toContain("budget");
+    expect(result.coverage).toMatchObject({
+      complete: false,
+      reviewedFiles: 1,
+      skippedFiles: 2,
+      reasons: ["token-budget"],
+    });
   });
 });
 
@@ -98,11 +104,25 @@ describe("init generators", () => {
     expect(yml).toContain("gemini-api-key: ${{ secrets.GEMINI_API_KEY }}");
     expect(yml).toContain("fail-on: critical");
     expect(yml).toContain("pull-requests: write");
+    expect(yml).toContain("github.event.pull_request.base.sha");
+    expect(yml).toContain("cancel-in-progress: true");
   });
 
   it("gives self-hosted users base-url instructions instead of secrets", () => {
     const text = secretInstructions({ ...answers, provider: "openai", selfHosted: true });
     expect(text).toContain("OPENAI_BASE_URL");
     expect(text).not.toContain("gh secret set");
+  });
+
+  it("wires self-hosted mode to a self-hosted runner and endpoint", () => {
+    const yml = buildWorkflow({
+      ...answers,
+      provider: "openai",
+      selfHosted: true,
+      baseUrl: "http://ollama.internal:11434/v1",
+    });
+    expect(yml).toContain("runs-on: self-hosted");
+    expect(yml).toContain("openai-base-url: http://ollama.internal:11434/v1");
+    expect(yml).not.toContain("secrets.OPENAI_API_KEY");
   });
 });

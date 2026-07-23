@@ -29,6 +29,24 @@ export interface Finding {
 export interface ReviewResult {
   summary: string;
   findings: Finding[];
+  /** How much of the requested change was actually reviewed. */
+  coverage?: ReviewCoverage;
+}
+
+export type IncompleteReason =
+  | "path-filter"
+  | "excluded"
+  | "missing-patch"
+  | "token-budget";
+
+export interface ReviewCoverage {
+  /** False when any part of the change was intentionally or technically omitted. */
+  complete: boolean;
+  totalFiles: number;
+  reviewedFiles: number;
+  skippedFiles: number;
+  skippedBatches: number;
+  reasons: IncompleteReason[];
 }
 
 export interface DiffFile {
@@ -45,11 +63,14 @@ export interface PullRequestInfo {
   title: string;
   body: string;
   baseRef: string;
+  baseSha: string;
   headRef: string;
   headSha: string;
   draft: boolean;
   labels: string[];
   files: DiffFile[];
+  /** Binary/oversized files for which GitHub did not return a patch. */
+  missingPatchFiles: number;
 }
 
 export type ProviderName = "anthropic" | "openai" | "gemini";

@@ -26,6 +26,18 @@ interface Finding {
 interface ReviewResult {
     summary: string;
     findings: Finding[];
+    /** How much of the requested change was actually reviewed. */
+    coverage?: ReviewCoverage;
+}
+type IncompleteReason = "path-filter" | "excluded" | "missing-patch" | "token-budget";
+interface ReviewCoverage {
+    /** False when any part of the change was intentionally or technically omitted. */
+    complete: boolean;
+    totalFiles: number;
+    reviewedFiles: number;
+    skippedFiles: number;
+    skippedBatches: number;
+    reasons: IncompleteReason[];
 }
 interface DiffFile {
     path: string;
@@ -40,11 +52,14 @@ interface PullRequestInfo {
     title: string;
     body: string;
     baseRef: string;
+    baseSha: string;
     headRef: string;
     headSha: string;
     draft: boolean;
     labels: string[];
     files: DiffFile[];
+    /** Binary/oversized files for which GitHub did not return a patch. */
+    missingPatchFiles: number;
 }
 type ProviderName = "anthropic" | "openai" | "gemini";
 interface ProviderUsage {
@@ -69,6 +84,9 @@ type ReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
 declare const PR_SAGE_MARKER = "<!-- pr-sage -->";
 /** Marker recording which head commit a summary review covered. */
 declare function shaMarker(sha: string): string;
+declare function findingKey(f: Pick<Finding, "path" | "title">): string;
+declare function activeMarker(keys: Iterable<string>): string;
+declare function replaceActiveMarker(summary: string, keys: Iterable<string>): string;
 declare class GitHubClient {
     private readonly token;
     private readonly owner;
@@ -78,6 +96,7 @@ declare class GitHubClient {
     constructor(token: string, owner: string, repo: string, baseUrl?: string, fetchImpl?: typeof fetch);
     private request;
     fetchPullRequest(prNumber: number): Promise<PullRequestInfo>;
+    fetchPullRequestHead(prNumber: number): Promise<string>;
     /** Files changed between two commits (for incremental review). */
     compareFiles(baseSha: string, headSha: string): Promise<DiffFile[]>;
     /** Fetch a file's content at a given ref. Returns null for binary/oversized/missing files. */
@@ -96,11 +115,14 @@ declare class GitHubClient {
         fingerprints: Set<string>;
         hasReview: boolean;
         lastReviewedSha: string | null;
+        /** Finding keys recorded as active by the most recent pr-sage review. */
+        activeFingerprints: Set<string>;
     }>;
     postReview(prNumber: number, summary: string, findings: Finding[], event?: ReviewEvent): Promise<{
         url: string;
         event: ReviewEvent;
     }>;
+    postCheckRun(headSha: string, result: ReviewResult, gateTripped: boolean): Promise<string>;
 }
 declare function formatComment(f: Finding): string;
 /** Parse "owner/repo", or fall back to the GITHUB_REPOSITORY env var (set in Actions). */
@@ -141,8 +163,27 @@ interface ReviewOptions {
     anchorFiles?: DiffFile[];
     /** Cost guard: stop launching new batches once this many tokens are spent. */
     maxTokens?: number;
+    /** Total files before path filtering, used for honest coverage reporting. */
+    totalFiles?: number;
+    /** Files omitted by the source API because no textual patch was available. */
+    missingPatchFiles?: number;
+    /** Optional provider used only for the verification pass. */
+    verifier?: Provider;
+    /** Behavior when verification cannot complete. */
+    verifyFailure?: "abort" | "keep" | "drop";
+    /** Path-specific instructions and severity policies. */
+    pathRules?: PathRule[];
+}
+interface PathRule {
+    paths: string[];
+    instructions?: string;
+    minSeverity?: Severity;
+    failOn?: Severity;
 }
 declare const DEFAULT_EXCLUDES: string[];
+/** Keep only files matching at least one glob/substring (monorepo scoping). */
+declare function includeFiles(files: DiffFile[], paths: string[]): DiffFile[];
+declare function matchesAnyPath(path: string, patterns: string[]): boolean;
 declare function filterFiles(files: DiffFile[], exclude: string[]): DiffFile[];
 /** Split files into batches whose annotated patches fit the character budget. */
 declare function batchFiles(files: DiffFile[], budget: number): DiffFile[][];
@@ -179,7 +220,7 @@ declare function validateFindings(findings: Finding[], files: DiffFile[]): {
     dropped: Finding[];
 };
 
-/** Parse `git diff` output into per-file DiffFiles (deleted files are skipped). */
+/** Parse `git diff` output into per-file DiffFiles, including deleted files. */
 declare function parseUnifiedDiff(text: string): DiffFile[];
 /** Run `git diff` against a base ref (or the index with staged=true). */
 declare function localDiffFiles(base: string, staged: boolean): Promise<DiffFile[]>;
@@ -222,6 +263,11 @@ declare const configSchema: z.ZodObject<{
         auto: "auto";
     }>>;
     verify: z.ZodOptional<z.ZodBoolean>;
+    verifyFailure: z.ZodOptional<z.ZodEnum<{
+        abort: "abort";
+        keep: "keep";
+        drop: "drop";
+    }>>;
     output: z.ZodOptional<z.ZodEnum<{
         text: "text";
         json: "json";
@@ -234,6 +280,30 @@ declare const configSchema: z.ZodObject<{
     skipDraft: z.ZodOptional<z.ZodBoolean>;
     skipWip: z.ZodOptional<z.ZodBoolean>;
     maxTokensPerRun: z.ZodOptional<z.ZodNumber>;
+    failOnIncomplete: z.ZodOptional<z.ZodBoolean>;
+    checkRun: z.ZodOptional<z.ZodBoolean>;
+    verifyProvider: z.ZodOptional<z.ZodEnum<{
+        anthropic: "anthropic";
+        openai: "openai";
+        gemini: "gemini";
+    }>>;
+    verifyModel: z.ZodOptional<z.ZodString>;
+    pathRules: z.ZodOptional<z.ZodArray<z.ZodObject<{
+        paths: z.ZodArray<z.ZodString>;
+        instructions: z.ZodOptional<z.ZodString>;
+        minSeverity: z.ZodOptional<z.ZodEnum<{
+            critical: "critical";
+            warning: "warning";
+            suggestion: "suggestion";
+            nitpick: "nitpick";
+        }>>;
+        failOn: z.ZodOptional<z.ZodEnum<{
+            critical: "critical";
+            warning: "warning";
+            suggestion: "suggestion";
+            nitpick: "nitpick";
+        }>>;
+    }, z.core.$strict>>>;
 }, z.core.$strict>;
 type PrSageConfig = z.infer<typeof configSchema>;
 /** Returns a human-readable reason when the PR shouldn't be reviewed, else null. */
@@ -245,6 +315,13 @@ declare function skipReason(pr: {
 declare const CONFIG_FILENAME = ".pr-sage.json";
 declare function loadConfig(explicitPath?: string): Promise<PrSageConfig>;
 
+interface DoctorCheck {
+    name: string;
+    ok: boolean;
+    detail: string;
+}
+declare function runDoctorChecks(config: PrSageConfig): Promise<DoctorCheck[]>;
+
 /**
  * Resolve `"auto"` locale from sample text (PR title/body, commit messages).
  * Detection is script-based and deliberately coarse — when nothing matches,
@@ -252,12 +329,17 @@ declare function loadConfig(explicitPath?: string): Promise<PrSageConfig>;
  */
 declare function resolveLocale(locale: string, ...samples: Array<string | undefined>): string;
 
+/** Resolve the GitHub review event without ever approving incomplete coverage. */
+declare function resolveEvent(mode: string, findings: Finding[], complete?: boolean): ReviewEvent;
+
 interface InitAnswers {
     provider: ProviderName;
     /** True when the user picked a self-hosted OpenAI-compatible endpoint. */
     selfHosted: boolean;
     locale: string;
     failOnCritical: boolean;
+    /** Endpoint used by a self-hosted OpenAI-compatible runner. */
+    baseUrl?: string;
 }
 declare function buildConfig(answers: InitAnswers): string;
 declare function buildWorkflow(answers: InitAnswers): string;
@@ -284,4 +366,4 @@ interface RetryOptions {
 /** Retry `fn` on rate-limit/overload errors with exponential backoff + jitter. */
 declare function withRetry<T>(fn: () => Promise<T>, { retries, baseDelayMs, log }?: RetryOptions): Promise<T>;
 
-export { CONFIG_FILENAME, DEFAULT_EXCLUDES, type DiffFile, type Finding, GitHubClient, type InitAnswers, type OutputFormat, PR_SAGE_MARKER, type PrSageConfig, type Provider, type ProviderName, type PullRequestInfo, type ReviewEvent, type ReviewOptions, type ReviewResult, type ReviewTarget, SEVERITIES, type Severity, annotatePatch, batchFiles, buildConfig, buildWorkflow, commentableLines, createProvider, filterFiles, formatComment, isRetryable, loadConfig, localDiffFiles, parseReviewResult, parseSummary, parseUnifiedDiff, parseVerdicts, resolveLocale, resolveRepo, runReview, sanitizeFindings, secretInstructions, severityAtLeast, shaMarker, skipReason, toJson, toSarif, validateFindings, withRetry };
+export { CONFIG_FILENAME, DEFAULT_EXCLUDES, type DiffFile, type DoctorCheck, type Finding, GitHubClient, type IncompleteReason, type InitAnswers, type OutputFormat, PR_SAGE_MARKER, type PathRule, type PrSageConfig, type Provider, type ProviderName, type PullRequestInfo, type ReviewCoverage, type ReviewEvent, type ReviewOptions, type ReviewResult, type ReviewTarget, SEVERITIES, type Severity, activeMarker, annotatePatch, batchFiles, buildConfig, buildWorkflow, commentableLines, createProvider, filterFiles, findingKey, formatComment, includeFiles, isRetryable, loadConfig, localDiffFiles, matchesAnyPath, parseReviewResult, parseSummary, parseUnifiedDiff, parseVerdicts, replaceActiveMarker, resolveEvent, resolveLocale, resolveRepo, runDoctorChecks, runReview, sanitizeFindings, secretInstructions, severityAtLeast, shaMarker, skipReason, toJson, toSarif, validateFindings, withRetry };

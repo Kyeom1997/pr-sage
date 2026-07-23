@@ -5,7 +5,7 @@ import { commentableLines, commentableOldLines } from "./diff.js";
 
 const execFileAsync = promisify(execFile);
 
-/** Parse `git diff` output into per-file DiffFiles (deleted files are skipped). */
+/** Parse `git diff` output into per-file DiffFiles, including deleted files. */
 export function parseUnifiedDiff(text: string): DiffFile[] {
   const files: DiffFile[] = [];
   for (const chunk of text.split(/^diff --git /m).slice(1)) {
@@ -13,14 +13,23 @@ export function parseUnifiedDiff(text: string): DiffFile[] {
     const plusLine = lines.find((l) => l.startsWith("+++ "));
     if (!plusLine) continue;
     const newPath = plusLine.slice(4).trim();
-    if (newPath === "/dev/null") continue; // deleted file — nothing to anchor to
-    const path = newPath.startsWith("b/") ? newPath.slice(2) : newPath;
+    const minusLine = lines.find((l) => l.startsWith("--- "));
+    const oldPath = minusLine?.slice(4).trim();
+    const rawPath = newPath === "/dev/null" ? oldPath : newPath;
+    if (!rawPath || rawPath === "/dev/null") continue;
+    const path = rawPath.startsWith("a/") || rawPath.startsWith("b/")
+      ? rawPath.slice(2)
+      : rawPath;
     const hunkStart = lines.findIndex((l) => l.startsWith("@@ "));
     if (hunkStart === -1) continue; // binary or mode-only change
     const patch = lines.slice(hunkStart).join("\n");
     files.push({
       path,
-      status: chunk.includes("\nnew file mode") ? "added" : "modified",
+      status: newPath === "/dev/null"
+        ? "removed"
+        : chunk.includes("\nnew file mode")
+          ? "added"
+          : "modified",
       patch,
       commentableLines: commentableLines(patch),
       commentableOldLines: commentableOldLines(patch),

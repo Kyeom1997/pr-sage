@@ -9,6 +9,7 @@ export function toJson(result: ReviewResult, provider: Provider): string {
       model: provider.model,
       summary: result.summary,
       findings: result.findings,
+      coverage: result.coverage,
     },
     null,
     2,
@@ -53,6 +54,12 @@ export function toSarif(result: ReviewResult, provider: Provider): string {
               },
             ],
           })),
+          invocations: result.coverage
+            ? [{
+                executionSuccessful: result.coverage.complete,
+                properties: { coverage: result.coverage },
+              }]
+            : undefined,
         },
       ],
     },

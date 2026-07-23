@@ -31,14 +31,16 @@ const GIT_DIFF = [
 ].join("\n");
 
 describe("parseUnifiedDiff", () => {
-  it("parses files, skips deletions, detects added files", () => {
+  it("parses modified, deleted, and added files", () => {
     const files = parseUnifiedDiff(GIT_DIFF);
     expect(files.map((f) => [f.path, f.status])).toEqual([
       ["src/a.ts", "modified"],
+      ["gone.ts", "removed"],
       ["new.ts", "added"],
     ]);
+    expect([...files[1]!.commentableOldLines!]).toEqual([1]);
     expect([...files[0]!.commentableLines].sort((a, b) => a - b)).toEqual([1, 2, 3]);
-    expect([...files[1]!.commentableLines]).toEqual([1]);
+    expect([...files[2]!.commentableLines]).toEqual([1]);
   });
 });
 

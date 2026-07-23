@@ -7,6 +7,7 @@
 Most AI reviewers re-review the whole PR on every push and repeat themselves until the team mutes them. pr-sage is designed around the opposite goal: say each thing once, follow your team's rules, and stay silent when there is nothing new to say.
 
 - 🔇 **Zero duplicate comments.** Findings carry content fingerprints — a line shift won't make the same comment appear twice, and re-runs post nothing when nothing changed.
+- ✅ **Finding lifecycle.** Follow-up reviews report which findings remain unresolved and which were fixed.
 - ⏩ **Incremental by default.** After the first review, only the commits you pushed since get reviewed. Less noise, fewer tokens.
 - 📏 **Your rules, not generic advice.** `.pr-sage.json` instructions plus automatic `CLAUDE.md`/`CONTRIBUTING.md` injection make reviews follow team conventions.
 - 🚦 **A quality gate, not just commentary.** `--fail-on critical` blocks merges; `--event auto` approves clean PRs and requests changes on real problems.
@@ -21,6 +22,7 @@ The fastest path — an interactive wizard that writes your config and the GitHu
 
 ```bash
 npx pr-sage init
+npx pr-sage doctor
 ```
 
 Or by hand (CLI):
@@ -69,8 +71,13 @@ npx pr-sage review --repo owner/name --pr 123 --provider openai --locale Korean
 | `--fail-on <sev>` | — | Exit 1 if any finding is at or above this severity — use as a CI quality gate |
 | `--context <mode>` | `patch` | `full` sends complete file contents to the model for better accuracy (more tokens) |
 | `--event <mode>` | `comment` | `auto` approves clean PRs and requests changes on critical findings (falls back to comment on your own PRs) |
-| `--verify` | off | Second model pass that rejects unconfirmed findings — fewer false positives, double cost |
+| `--verify` | off | Second model pass that rejects unconfirmed findings |
+| `--verify-provider <name>` | same provider | Use a separate provider for verification |
+| `--verify-model <id>` | provider default | Use a separate verification model |
+| `--verify-failure <mode>` | `abort` | `abort`, `keep`, or `drop` when verification fails |
 | `--output <format>` | `text` | `json` or `sarif` for machine-readable results |
+| `--fail-on-incomplete` | off | Fail when filtering, missing patches, or the token budget leaves part of the change unreviewed |
+| `--check-run` | off | Publish findings as GitHub Check Run annotations |
 | `--no-dedupe` | — | Repost findings already commented by a previous pr-sage review (dedup is on by default) |
 | `--no-incremental` | — | Always review the full PR diff instead of only commits since the last pr-sage review |
 | `--batch-chars <n>` | `80000` | Max diff characters per model request; larger PRs are reviewed in batches |
@@ -82,6 +89,8 @@ Required environment variables: `GITHUB_TOKEN` (with `pull_requests: write`), pl
 On repeat runs (e.g. new commits pushed to the PR), pr-sage reviews **only the commits pushed since its last review** (incremental mode), skips findings it has already commented, and posts nothing when there is nothing new — no duplicate-comment spam, no wasted tokens. If your repo has a `CLAUDE.md` or `CONTRIBUTING.md`, it is automatically injected as review context (disable with `"repoContext": false`). GitHub Enterprise works out of the box via `$GITHUB_API_URL` or the `githubApiUrl` config field.
 
 Each run prints its token usage to stderr (`LLM usage: N call(s), X input / Y output tokens`) so cost stays visible.
+Every summary also reports review coverage. Partial reviews never auto-approve a PR. Use
+`--fail-on-incomplete` when incomplete coverage must fail the CI quality gate.
 
 ## Self-hosted / local models
 
@@ -94,6 +103,8 @@ OPENAI_BASE_URL=http://localhost:11434/v1 \
 ```
 
 Works the same with vLLM, LM Studio, or any gateway that speaks the OpenAI chat completions API.
+For GitHub Actions, `init --provider self-hosted` generates a workflow for a
+`self-hosted` runner; `localhost` must refer to that runner, not a GitHub-hosted VM.
 
 ## Configuration file
 
@@ -109,7 +120,21 @@ Put a `.pr-sage.json` in the directory you run from (CLI flags override it):
   "failOn": "critical",
   "context": "full",
   "maxTokensPerRun": 200000,
+  "failOnIncomplete": true,
   "skipLabels": ["skip-review"],
+  "verify": true,
+  "verifyProvider": "gemini",
+  "verifyModel": "gemini-flash-latest",
+  "verifyFailure": "abort",
+  "checkRun": true,
+  "pathRules": [
+    {
+      "paths": ["packages/api/**"],
+      "instructions": "Check public API backward compatibility.",
+      "minSeverity": "suggestion",
+      "failOn": "warning"
+    }
+  ],
   "instructions": "We use Result<T, E> for error handling — flag thrown exceptions in domain code. Prefer early returns over nested conditionals."
 }
 ```
@@ -128,18 +153,39 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  checks: write
+
+concurrency:
+  group: pr-sage-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   review:
     runs-on: ubuntu-latest
     steps:
+      # Read .pr-sage.json from trusted base code, never PR-controlled code.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
       - uses: Kyeom1997/pr-sage@v1
         with:
           provider: anthropic
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           locale: Korean
           fail-on: critical   # optional: block merge on critical findings
+          fail-on-incomplete: "true"
+          check-run: "true"
 ```
+
+To upload SARIF, add `security-events: write` and set `sarif: "true"`. The Action
+also exposes first-class `paths`, `max-tokens`, `verify-provider`,
+`verify-model`, `verify-failure`, and `openai-base-url` inputs.
+
+The base-SHA checkout is deliberate: configuration and repository guidelines
+must come from trusted base code. The PR diff itself is always fetched through
+the GitHub API, and pr-sage rechecks the head SHA immediately before posting so
+a slow review cannot comment on a superseded commit.
 
 ## Measuring it
 
@@ -150,6 +196,9 @@ node scripts/bench.mjs --repos fastify/fastify --per-repo 5 --provider gemini
 ```
 
 `--mode recall` measures the other axis: it picks merged PRs that received human review comments, reviews each PR's **first commit** (the state humans reviewed), and reports how many human-flagged locations pr-sage also flags — with a side-by-side sheet for manual verification.
+
+The `Quality Benchmark` workflow can run either benchmark manually and uploads
+the generated JSON and labeling sheet as workflow artifacts.
 
 ### Measured (2026-07, 28 PRs)
 

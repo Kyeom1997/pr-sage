@@ -1,4 +1,11 @@
-import type { DiffFile, Finding, PullRequestInfo, ReviewEvent } from "./types.js";
+import type {
+  DiffFile,
+  Finding,
+  PullRequestInfo,
+  ReviewCoverage,
+  ReviewEvent,
+  ReviewResult,
+} from "./types.js";
 import { commentableLines, commentableOldLines } from "./diff.js";
 
 /** Hidden marker identifying comments posted by pr-sage (used for dedup). */
@@ -11,6 +18,7 @@ export function shaMarker(sha: string): string {
 
 const SHA_MARKER_RE = /<!-- pr-sage sha:([0-9a-f]{6,40}) -->/;
 const FP_MARKER_RE = /<!-- pr-sage fp:([0-9a-z]+) -->/;
+const ACTIVE_MARKER_RE = /<!-- pr-sage active:([A-Za-z0-9_-]+) -->/;
 
 /**
  * Content-based identity of a finding (path + normalized title), stable
@@ -35,6 +43,22 @@ export function findingFingerprint(f: Pick<Finding, "path" | "title">): string {
 
 export function fpMarker(f: Pick<Finding, "path" | "title">): string {
   return `<!-- pr-sage fp:${findingFingerprint(f)} -->`;
+}
+
+export function findingKey(f: Pick<Finding, "path" | "title">): string {
+  return `${f.path}|${findingFingerprint(f)}`;
+}
+
+export function activeMarker(keys: Iterable<string>): string {
+  const encoded = Buffer.from(JSON.stringify([...new Set(keys)].sort())).toString("base64url");
+  return `<!-- pr-sage active:${encoded} -->`;
+}
+
+export function replaceActiveMarker(summary: string, keys: Iterable<string>): string {
+  const marker = activeMarker(keys);
+  return ACTIVE_MARKER_RE.test(summary)
+    ? summary.replace(ACTIVE_MARKER_RE, marker)
+    : `${summary}\n${marker}`;
 }
 
 export class GitHubClient {
@@ -92,18 +116,22 @@ export class GitHubClient {
       body: string | null;
       draft?: boolean;
       labels?: Array<{ name: string }>;
-      base: { ref: string };
+      base: { ref: string; sha: string };
       head: { ref: string; sha: string };
     }>(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}`);
 
     const files: DiffFile[] = [];
+    let missingPatchFiles = 0;
     for (let page = 1; ; page++) {
       const batch = await this.request<
         Array<{ filename: string; status: string; patch?: string }>
       >(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}/files?per_page=100&page=${page}`);
       for (const f of batch) {
         // Binary files and very large files come without a patch — skip them.
-        if (!f.patch) continue;
+        if (!f.patch) {
+          missingPatchFiles++;
+          continue;
+        }
         files.push({
           path: f.filename,
           status: f.status,
@@ -119,12 +147,21 @@ export class GitHubClient {
       title: pr.title,
       body: pr.body ?? "",
       baseRef: pr.base.ref,
+      baseSha: pr.base.sha,
       headRef: pr.head.ref,
       headSha: pr.head.sha,
       draft: pr.draft ?? false,
       labels: (pr.labels ?? []).map((l) => l.name),
       files,
+      missingPatchFiles,
     };
+  }
+
+  async fetchPullRequestHead(prNumber: number): Promise<string> {
+    const pr = await this.request<{ head: { sha: string } }>(
+      `/repos/${this.owner}/${this.repo}/pulls/${prNumber}`,
+    );
+    return pr.head.sha;
   }
 
   /** Files changed between two commits (for incremental review). */
@@ -190,6 +227,8 @@ export class GitHubClient {
     fingerprints: Set<string>;
     hasReview: boolean;
     lastReviewedSha: string | null;
+    /** Finding keys recorded as active by the most recent pr-sage review. */
+    activeFingerprints: Set<string>;
   }> {
     const commentedLocations = new Set<string>();
     const fingerprints = new Set<string>();
@@ -209,6 +248,7 @@ export class GitHubClient {
 
     let hasReview = false;
     let lastReviewedSha: string | null = null;
+    let activeFingerprints = new Set<string>();
     for (let page = 1; ; page++) {
       const batch = await this.request<Array<{ body: string | null }>>(
         `/repos/${this.owner}/${this.repo}/pulls/${prNumber}/reviews?per_page=100&page=${page}`,
@@ -218,11 +258,28 @@ export class GitHubClient {
         hasReview = true;
         const sha = review.body.match(SHA_MARKER_RE)?.[1];
         if (sha) lastReviewedSha = sha; // reviews are chronological; last wins
+        const encoded = review.body.match(ACTIVE_MARKER_RE)?.[1];
+        if (encoded) {
+          try {
+            const keys = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+            if (Array.isArray(keys) && keys.every((key) => typeof key === "string")) {
+              activeFingerprints = new Set(keys);
+            }
+          } catch {
+            // Ignore malformed markers from older/manual reviews.
+          }
+        }
       }
       if (batch.length < 100) break;
     }
 
-    return { commentedLocations, fingerprints, hasReview, lastReviewedSha };
+    return {
+      commentedLocations,
+      fingerprints,
+      hasReview,
+      lastReviewedSha,
+      activeFingerprints,
+    };
   }
 
   async postReview(
@@ -268,6 +325,56 @@ export class GitHubClient {
       throw error;
     }
   }
+
+  async postCheckRun(
+    headSha: string,
+    result: ReviewResult,
+    gateTripped: boolean,
+  ): Promise<string> {
+    const coverage = result.coverage;
+    const incomplete = coverage?.complete === false;
+    const conclusion = gateTripped ? "failure" : incomplete ? "neutral" : "success";
+    const annotations = result.findings.slice(0, 50).map((f) => ({
+      path: f.path,
+      start_line: f.line,
+      ...(f.endLine ? { end_line: f.endLine } : {}),
+      annotation_level: f.severity === "critical"
+        ? "failure"
+        : f.severity === "warning"
+          ? "warning"
+          : "notice",
+      title: f.title.slice(0, 255),
+      message: f.body.slice(0, 65_535),
+    }));
+    const coverageText = coverage ? formatCoverage(coverage) : "Coverage unavailable";
+    const check = await this.request<{ html_url: string }>(
+      `/repos/${this.owner}/${this.repo}/check-runs`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: "pr-sage",
+          head_sha: headSha,
+          status: "completed",
+          conclusion,
+          output: {
+            title: gateTripped
+              ? "Review quality gate failed"
+              : incomplete
+                ? "Review completed with partial coverage"
+                : "Review completed",
+            summary: `${coverageText}\n\n${result.findings.length} finding(s).`,
+            annotations,
+          },
+        }),
+      },
+    );
+    return check.html_url;
+  }
+}
+
+function formatCoverage(coverage: ReviewCoverage): string {
+  const reasons = coverage.reasons.length > 0 ? ` (${coverage.reasons.join(", ")})` : "";
+  return `Coverage: ${coverage.reviewedFiles}/${coverage.totalFiles} files${reasons}`;
 }
 
 const SEVERITY_BADGE: Record<Finding["severity"], string> = {

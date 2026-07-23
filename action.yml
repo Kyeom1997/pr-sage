@@ -7,13 +7,13 @@ branding:
 inputs:
   provider:
     description: "LLM provider: anthropic | openai | gemini"
-    default: "anthropic"
+    default: ""
   model:
     description: "Model id (defaults to the provider's recommended model)"
     default: ""
   locale:
     description: "Language for review output (e.g. Korean, English)"
-    default: "English"
+    default: ""
   exclude:
     description: "Comma-separated globs or substrings to skip, added to defaults"
     default: ""
@@ -28,6 +28,36 @@ inputs:
     default: ""
   event:
     description: "comment (default) or auto — auto approves clean PRs and requests changes on critical findings"
+    default: ""
+  paths:
+    description: "Comma-separated globs limiting the review scope"
+    default: ""
+  max-tokens:
+    description: "Maximum token budget for one run"
+    default: ""
+  verify:
+    description: "Run a false-positive verification pass"
+    default: "false"
+  verify-provider:
+    description: "Optional separate provider for verification"
+    default: ""
+  verify-model:
+    description: "Optional separate model for verification"
+    default: ""
+  verify-failure:
+    description: "Verification failure policy: abort | keep | drop"
+    default: ""
+  fail-on-incomplete:
+    description: "Fail when any part of the change was not reviewed"
+    default: "false"
+  check-run:
+    description: "Publish findings as a GitHub Check Run"
+    default: "false"
+  sarif:
+    description: "Upload findings as SARIF (requires security-events: write)"
+    default: "false"
+  openai-base-url:
+    description: "OpenAI-compatible endpoint URL"
     default: ""
   extra-args:
     description: "Extra pr-sage CLI flags, e.g. \"--verify --output sarif\""
@@ -58,13 +88,33 @@ runs:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
         OPENAI_API_KEY: ${{ inputs.openai-api-key }}
         GEMINI_API_KEY: ${{ inputs.gemini-api-key }}
+        OPENAI_BASE_URL: ${{ inputs.openai-base-url }}
       run: |
-        ARGS=(review --pr "${{ github.event.pull_request.number }}" --provider "${{ inputs.provider }}" --locale "${{ inputs.locale }}")
+        ARGS=(review --pr "${{ github.event.pull_request.number }}")
+        if [ -n "${{ inputs.provider }}" ]; then ARGS+=(--provider "${{ inputs.provider }}"); fi
+        if [ -n "${{ inputs.locale }}" ]; then ARGS+=(--locale "${{ inputs.locale }}"); fi
         if [ -n "${{ inputs.model }}" ]; then ARGS+=(--model "${{ inputs.model }}"); fi
         if [ -n "${{ inputs.exclude }}" ]; then ARGS+=(--exclude "${{ inputs.exclude }}"); fi
         if [ -n "${{ inputs.fail-on }}" ]; then ARGS+=(--fail-on "${{ inputs.fail-on }}"); fi
         if [ -n "${{ inputs.min-severity }}" ]; then ARGS+=(--min-severity "${{ inputs.min-severity }}"); fi
         if [ -n "${{ inputs.context }}" ]; then ARGS+=(--context "${{ inputs.context }}"); fi
         if [ -n "${{ inputs.event }}" ]; then ARGS+=(--event "${{ inputs.event }}"); fi
+        if [ -n "${{ inputs.paths }}" ]; then ARGS+=(--paths "${{ inputs.paths }}"); fi
+        if [ -n "${{ inputs.max-tokens }}" ]; then ARGS+=(--max-tokens "${{ inputs.max-tokens }}"); fi
+        if [ "${{ inputs.verify }}" = "true" ]; then ARGS+=(--verify); fi
+        if [ -n "${{ inputs.verify-provider }}" ]; then ARGS+=(--verify-provider "${{ inputs.verify-provider }}"); fi
+        if [ -n "${{ inputs.verify-model }}" ]; then ARGS+=(--verify-model "${{ inputs.verify-model }}"); fi
+        if [ -n "${{ inputs.verify-failure }}" ]; then ARGS+=(--verify-failure "${{ inputs.verify-failure }}"); fi
+        if [ "${{ inputs.fail-on-incomplete }}" = "true" ]; then ARGS+=(--fail-on-incomplete); fi
+        if [ "${{ inputs.check-run }}" = "true" ]; then ARGS+=(--check-run); fi
         if [ -n "${{ inputs.extra-args }}" ]; then read -ra EXTRA <<< "${{ inputs.extra-args }}"; ARGS+=("${EXTRA[@]}"); fi
-        node "$GITHUB_ACTION_PATH/dist/cli.js" "${ARGS[@]}"
+        if [ "${{ inputs.sarif }}" = "true" ]; then
+          node "$GITHUB_ACTION_PATH/dist/cli.js" "${ARGS[@]}" --output sarif > "$RUNNER_TEMP/pr-sage.sarif"
+        else
+          node "$GITHUB_ACTION_PATH/dist/cli.js" "${ARGS[@]}"
+        fi
+    - name: Upload SARIF
+      if: ${{ inputs.sarif == 'true' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ runner.temp }}/pr-sage.sarif
