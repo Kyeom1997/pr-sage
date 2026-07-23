@@ -17,5 +17,6 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - run: node test/init-e2e.mjs
       - name: Committed dist must match source
         run: git diff --exit-code -- dist

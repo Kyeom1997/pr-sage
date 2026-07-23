@@ -6,6 +6,8 @@ export interface InitAnswers {
   selfHosted: boolean;
   locale: string;
   failOnCritical: boolean;
+  /** Endpoint used by a self-hosted OpenAI-compatible runner. */
+  baseUrl?: string;
 }
 
 export const PROVIDER_KEY_ENV: Record<ProviderName, string> = {
@@ -41,16 +43,27 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: pr-sage-\${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
-    runs-on: ubuntu-latest
+    runs-on: ${answers.selfHosted ? "self-hosted" : "ubuntu-latest"}
     # Secrets are unavailable on forked PRs; skip instead of failing.
     if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
+      # Load configuration from the trusted base commit, never from PR-controlled code.
+      - uses: actions/checkout@v4
+        with:
+          ref: \${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
       - uses: Kyeom1997/pr-sage@v1
         with:
           provider: ${answers.provider}
-          ${keyInput}: \${{ secrets.${keyEnv} }}
+          ${answers.selfHosted
+            ? `openai-base-url: ${answers.baseUrl ?? "http://localhost:11434/v1"}`
+            : `${keyInput}: \${{ secrets.${keyEnv} }}`}
           locale: ${answers.locale}${answers.failOnCritical ? "\n          fail-on: critical" : ""}
 `;
 }
@@ -61,8 +74,8 @@ export function secretInstructions(answers: InitAnswers, repo?: string): string 
   if (answers.selfHosted) {
     return [
       "Self-hosted endpoint: no API key secret needed.",
-      "Set OPENAI_BASE_URL where pr-sage runs, e.g.:",
-      "  OPENAI_BASE_URL=http://localhost:11434/v1",
+      "The generated workflow runs on a self-hosted runner and uses:",
+      `  OPENAI_BASE_URL=${answers.baseUrl ?? "http://localhost:11434/v1"}`,
     ].join("\n");
   }
   return [

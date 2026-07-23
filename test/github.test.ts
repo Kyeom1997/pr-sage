@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { GitHubClient, findingFingerprint, formatComment } from "../src/github.js";
+import {
+  GitHubClient,
+  activeMarker,
+  findingFingerprint,
+  findingKey,
+  formatComment,
+} from "../src/github.js";
 import type { Finding } from "../src/types.js";
 
 type FakeCall = { url: string; init?: RequestInit };
@@ -46,7 +52,7 @@ describe("GitHubClient.fetchPullRequest", () => {
         json: {
           title: "T",
           body: null,
-          base: { ref: "main" },
+          base: { ref: "main", sha: "base123" },
           head: { ref: "b", sha: "abc1234" },
         },
       },
@@ -56,6 +62,8 @@ describe("GitHubClient.fetchPullRequest", () => {
     const pr = await client(impl).fetchPullRequest(7);
     expect(pr.files).toHaveLength(101);
     expect(pr.headSha).toBe("abc1234");
+    expect(pr.baseSha).toBe("base123");
+    expect(pr.missingPatchFiles).toBe(1);
     expect(pr.body).toBe("");
     expect(calls[1]?.url).toContain("page=1");
     expect(calls[2]?.url).toContain("page=2");
@@ -98,6 +106,31 @@ describe("GitHubClient.postReview", () => {
   });
 });
 
+describe("GitHubClient.postCheckRun", () => {
+  it("uses a neutral conclusion for incomplete coverage", async () => {
+    const { impl, calls } = fakeFetch([{ json: { html_url: "https://x/check" } }]);
+    await client(impl).postCheckRun(
+      "abc",
+      {
+        summary: "partial",
+        findings: [finding()],
+        coverage: {
+          complete: false,
+          totalFiles: 2,
+          reviewedFiles: 1,
+          skippedFiles: 1,
+          skippedBatches: 1,
+          reasons: ["token-budget"],
+        },
+      },
+      false,
+    );
+    const body = JSON.parse(String(calls[0]?.init?.body));
+    expect(body.conclusion).toBe("neutral");
+    expect(body.output.annotations).toHaveLength(1);
+  });
+});
+
 describe("GitHubClient.fetchPrSageHistory", () => {
   it("collects marked locations, fingerprints, and the last reviewed sha", async () => {
     const f = finding();
@@ -112,7 +145,11 @@ describe("GitHubClient.fetchPrSageHistory", () => {
       {
         json: [
           { body: "old summary <!-- pr-sage -->\n<!-- pr-sage sha:aaa111 -->" },
-          { body: "newer summary <!-- pr-sage -->\n<!-- pr-sage sha:bbb222 -->" },
+          {
+            body: `newer summary <!-- pr-sage -->\n<!-- pr-sage sha:bbb222 -->\n${activeMarker([
+              findingKey(f),
+            ])}`,
+          },
           { body: "human review" },
         ],
       },
@@ -122,6 +159,7 @@ describe("GitHubClient.fetchPrSageHistory", () => {
     expect(history.fingerprints).toEqual(new Set([`src/a.ts|${findingFingerprint(f)}`]));
     expect(history.hasReview).toBe(true);
     expect(history.lastReviewedSha).toBe("bbb222");
+    expect(history.activeFingerprints).toEqual(new Set([findingKey(f)]));
   });
 });
 

@@ -26672,7 +26672,7 @@ var require_getCredentials = __commonJS({
     var fs7 = __require("fs");
     var util_1 = __require("util");
     var errorWithCode_1 = require_errorWithCode();
-    var readFile4 = fs7.readFile ? (0, util_1.promisify)(fs7.readFile) : async () => {
+    var readFile5 = fs7.readFile ? (0, util_1.promisify)(fs7.readFile) : async () => {
       throw new errorWithCode_1.ErrorWithCode("use key rather than keyFile.", "MISSING_CREDENTIALS");
     };
     var ExtensionFiles;
@@ -26694,7 +26694,7 @@ var require_getCredentials = __commonJS({
        * @returns A promise that resolves with the credentials.
        */
       async getCredentials() {
-        const key = await readFile4(this.keyFilePath, "utf8");
+        const key = await readFile5(this.keyFilePath, "utf8");
         let body;
         try {
           body = JSON.parse(key);
@@ -26720,7 +26720,7 @@ var require_getCredentials = __commonJS({
        * @returns A promise that resolves with the private key.
        */
       async getCredentials() {
-        const privateKey = await readFile4(this.keyFilePath, "utf8");
+        const privateKey = await readFile5(this.keyFilePath, "utf8");
         return { privateKey };
       }
     };
@@ -28350,7 +28350,7 @@ var require_filesubjecttokensupplier = __commonJS({
     exports.FileSubjectTokenSupplier = void 0;
     var util_1 = __require("util");
     var fs7 = __require("fs");
-    var readFile4 = (0, util_1.promisify)(fs7.readFile ?? (() => {
+    var readFile5 = (0, util_1.promisify)(fs7.readFile ?? (() => {
     }));
     var realpath3 = (0, util_1.promisify)(fs7.realpath ?? (() => {
     }));
@@ -28390,7 +28390,7 @@ var require_filesubjecttokensupplier = __commonJS({
           throw err;
         }
         let subjectToken;
-        const rawText = await readFile4(parsedFilePath, { encoding: "utf8" });
+        const rawText = await readFile5(parsedFilePath, { encoding: "utf8" });
         if (this.formatType === "text") {
           subjectToken = rawText;
         } else if (this.formatType === "json" && this.subjectTokenFieldName) {
@@ -36745,7 +36745,7 @@ var require_picomatch2 = __commonJS({
 
 // src/cli.ts
 import { createRequire } from "module";
-import { readFile as readFile3, writeFile as writeFile2, mkdir as mkdir3 } from "fs/promises";
+import { readFile as readFile4, writeFile as writeFile2, mkdir as mkdir3 } from "fs/promises";
 import { existsSync } from "fs";
 import { execFile as execFile3 } from "child_process";
 import { promisify as promisify4 } from "util";
@@ -40287,6 +40287,7 @@ function shaMarker(sha) {
 }
 var SHA_MARKER_RE = /<!-- pr-sage sha:([0-9a-f]{6,40}) -->/;
 var FP_MARKER_RE = /<!-- pr-sage fp:([0-9a-z]+) -->/;
+var ACTIVE_MARKER_RE = /<!-- pr-sage active:([A-Za-z0-9_-]+) -->/;
 function findingFingerprint(f3) {
   const title = f3.title.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
   const input = `${f3.path}|${title}`;
@@ -40298,6 +40299,18 @@ function findingFingerprint(f3) {
 }
 function fpMarker(f3) {
   return `<!-- pr-sage fp:${findingFingerprint(f3)} -->`;
+}
+function findingKey(f3) {
+  return `${f3.path}|${findingFingerprint(f3)}`;
+}
+function activeMarker(keys) {
+  const encoded = Buffer.from(JSON.stringify([...new Set(keys)].sort())).toString("base64url");
+  return `<!-- pr-sage active:${encoded} -->`;
+}
+function replaceActiveMarker(summary, keys) {
+  const marker = activeMarker(keys);
+  return ACTIVE_MARKER_RE.test(summary) ? summary.replace(ACTIVE_MARKER_RE, marker) : `${summary}
+${marker}`;
 }
 var GitHubClient = class {
   constructor(token, owner, repo, baseUrl, fetchImpl = fetch) {
@@ -40342,10 +40355,14 @@ var GitHubClient = class {
   async fetchPullRequest(prNumber) {
     const pr = await this.request(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}`);
     const files = [];
+    let missingPatchFiles = 0;
     for (let page = 1; ; page++) {
       const batch = await this.request(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}/files?per_page=100&page=${page}`);
       for (const f3 of batch) {
-        if (!f3.patch) continue;
+        if (!f3.patch) {
+          missingPatchFiles++;
+          continue;
+        }
         files.push({
           path: f3.filename,
           status: f3.status,
@@ -40360,12 +40377,20 @@ var GitHubClient = class {
       title: pr.title,
       body: pr.body ?? "",
       baseRef: pr.base.ref,
+      baseSha: pr.base.sha,
       headRef: pr.head.ref,
       headSha: pr.head.sha,
       draft: pr.draft ?? false,
       labels: (pr.labels ?? []).map((l) => l.name),
-      files
+      files,
+      missingPatchFiles
     };
+  }
+  async fetchPullRequestHead(prNumber) {
+    const pr = await this.request(
+      `/repos/${this.owner}/${this.repo}/pulls/${prNumber}`
+    );
+    return pr.head.sha;
   }
   /** Files changed between two commits (for incremental review). */
   async compareFiles(baseSha, headSha) {
@@ -40431,6 +40456,7 @@ ${content.slice(0, 6e3)}`);
     }
     let hasReview = false;
     let lastReviewedSha = null;
+    let activeFingerprints = /* @__PURE__ */ new Set();
     for (let page = 1; ; page++) {
       const batch = await this.request(
         `/repos/${this.owner}/${this.repo}/pulls/${prNumber}/reviews?per_page=100&page=${page}`
@@ -40440,10 +40466,26 @@ ${content.slice(0, 6e3)}`);
         hasReview = true;
         const sha = review.body.match(SHA_MARKER_RE)?.[1];
         if (sha) lastReviewedSha = sha;
+        const encoded = review.body.match(ACTIVE_MARKER_RE)?.[1];
+        if (encoded) {
+          try {
+            const keys = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+            if (Array.isArray(keys) && keys.every((key) => typeof key === "string")) {
+              activeFingerprints = new Set(keys);
+            }
+          } catch {
+          }
+        }
       }
       if (batch.length < 100) break;
     }
-    return { commentedLocations, fingerprints, hasReview, lastReviewedSha };
+    return {
+      commentedLocations,
+      fingerprints,
+      hasReview,
+      lastReviewedSha,
+      activeFingerprints
+    };
   }
   async postReview(prNumber, summary, findings, event = "COMMENT") {
     const post = (ev) => this.request(
@@ -40475,7 +40517,45 @@ ${content.slice(0, 6e3)}`);
       throw error51;
     }
   }
+  async postCheckRun(headSha, result, gateTripped) {
+    const coverage = result.coverage;
+    const incomplete = coverage?.complete === false;
+    const conclusion = gateTripped ? "failure" : incomplete ? "neutral" : "success";
+    const annotations = result.findings.slice(0, 50).map((f3) => ({
+      path: f3.path,
+      start_line: f3.line,
+      ...f3.endLine ? { end_line: f3.endLine } : {},
+      annotation_level: f3.severity === "critical" ? "failure" : f3.severity === "warning" ? "warning" : "notice",
+      title: f3.title.slice(0, 255),
+      message: f3.body.slice(0, 65535)
+    }));
+    const coverageText = coverage ? formatCoverage(coverage) : "Coverage unavailable";
+    const check2 = await this.request(
+      `/repos/${this.owner}/${this.repo}/check-runs`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: "pr-sage",
+          head_sha: headSha,
+          status: "completed",
+          conclusion,
+          output: {
+            title: gateTripped ? "Review quality gate failed" : incomplete ? "Review completed with partial coverage" : "Review completed",
+            summary: `${coverageText}
+
+${result.findings.length} finding(s).`,
+            annotations
+          }
+        })
+      }
+    );
+    return check2.html_url;
+  }
 };
+function formatCoverage(coverage) {
+  const reasons = coverage.reasons.length > 0 ? ` (${coverage.reasons.join(", ")})` : "";
+  return `Coverage: ${coverage.reviewedFiles}/${coverage.totalFiles} files${reasons}`;
+}
 var SEVERITY_BADGE = {
   critical: "\u{1F534} **Critical**",
   warning: "\u{1F7E1} **Warning**",
@@ -88053,6 +88133,9 @@ function includeFiles(files, paths) {
     })
   );
 }
+function matchesAnyPath(path8, patterns) {
+  return includeFiles([{ path: path8 }], patterns).length > 0;
+}
 function filterFiles(files, exclude) {
   const matchers = exclude.map(
     (pattern) => GLOB_CHARS.test(pattern) ? (0, import_picomatch.default)(pattern, { dot: true }) : null
@@ -88137,14 +88220,30 @@ ${suggestion}
   });
 }
 async function runReview(provider, target, options) {
-  const files = splitOversizedFiles(filterFiles(target.files, options.exclude));
+  const filtered = filterFiles(target.files, options.exclude);
+  const excludedFiles = uniquePathCount(target.files) - uniquePathCount(filtered);
+  const files = splitOversizedFiles(filtered);
+  const targetFileCount = uniquePathCount(target.files);
+  const totalFiles = options.totalFiles ?? targetFileCount + (options.missingPatchFiles ?? 0);
+  const reasons = [];
+  if (totalFiles > targetFileCount + (options.missingPatchFiles ?? 0)) reasons.push("path-filter");
+  if (excludedFiles > 0) reasons.push("excluded");
+  if ((options.missingPatchFiles ?? 0) > 0) reasons.push("missing-patch");
+  const reviewedPaths = /* @__PURE__ */ new Set();
+  let skippedBatches = 0;
   if (files.length === 0) {
+    const coverage2 = makeCoverage(totalFiles, reviewedPaths, 0, reasons);
     return {
       result: {
-        summary: `No reviewable files in this change.
-
-${PR_SAGE_MARKER}`,
-        findings: []
+        summary: buildSummary(
+          "No reviewable files in this change.",
+          [],
+          provider,
+          target.headSha,
+          coverage2
+        ),
+        findings: [],
+        coverage: coverage2
       },
       dropped: []
     };
@@ -88156,15 +88255,18 @@ ${PR_SAGE_MARKER}`,
   const system = systemPrompt(options.locale, options.instructions);
   const summaries = [];
   const findings = [];
-  const startTokens = spentTokens(provider);
+  const providers = options.verifier ? [provider, options.verifier] : [provider];
+  const startTokens = spentTokens(...providers);
   let truncatedByBudget = false;
   for (const [i2, batch] of batches.entries()) {
-    if (options.maxTokens !== void 0 && spentTokens(provider) - startTokens >= options.maxTokens) {
+    if (options.maxTokens !== void 0 && spentTokens(...providers) - startTokens >= options.maxTokens) {
       const skipped = batches.length - i2;
       options.log(
         `Token budget (${options.maxTokens}) reached \u2014 stopping before ${skipped} remaining batch(es).`
       );
       truncatedByBudget = true;
+      skippedBatches = skipped;
+      if (!reasons.includes("token-budget")) reasons.push("token-budget");
       break;
     }
     if (batches.length > 1) options.log(`Batch ${i2 + 1}/${batches.length}: ${batch.length} file(s)`);
@@ -88178,7 +88280,23 @@ ${PR_SAGE_MARKER}`,
       }
     }
     const priorContext = summaries.length > 0 ? summaries.join("\n\n") : void 0;
-    const filesText = renderFiles(batch, contents);
+    let filesText = renderFiles(batch, contents);
+    const pathGuidance = renderPathGuidance(batch, options.pathRules ?? []);
+    if (pathGuidance) filesText = `${pathGuidance}
+
+${filesText}`;
+    const estimatedInputTokens = Math.ceil(
+      (system.length + userPrompt(target.title, target.body, filesText, priorContext).length) / 4
+    );
+    if (options.maxTokens !== void 0 && spentTokens(...providers) - startTokens + estimatedInputTokens > options.maxTokens) {
+      skippedBatches = batches.length - i2;
+      truncatedByBudget = true;
+      if (!reasons.includes("token-budget")) reasons.push("token-budget");
+      options.log(
+        `Token budget (${options.maxTokens}) would be exceeded by batch ${i2 + 1}; stopping before ${skippedBatches} remaining batch(es).`
+      );
+      break;
+    }
     const raw = await withRetry(
       () => provider.generate(
         system,
@@ -88190,12 +88308,19 @@ ${PR_SAGE_MARKER}`,
     const result = parseReviewResult(raw, options.log);
     let batchFindings = result.findings;
     if (options.verify && batchFindings.length > 0) {
-      batchFindings = await verifyBatch(provider, batchFindings, filesText, options.log);
+      batchFindings = await verifyBatch(
+        options.verifier ?? provider,
+        batchFindings,
+        filesText,
+        options.log,
+        options.verifyFailure ?? "abort"
+      );
     }
     summaries.push(result.summary);
     findings.push(...batchFindings);
+    for (const file2 of batch) reviewedPaths.add(file2.path);
   }
-  let summaryBody = await consolidateSummaries(provider, summaries, options);
+  let summaryBody = options.maxTokens !== void 0 && spentTokens(...providers) - startTokens >= options.maxTokens ? summaries.join("\n\n") : await consolidateSummaries(provider, summaries, options);
   if (truncatedByBudget) {
     summaryBody += `
 
@@ -88213,16 +88338,29 @@ ${PR_SAGE_MARKER}`,
       options.log(`Filtered ${before - kept.length} finding(s) below ${options.minSeverity}.`);
     }
   }
+  if (options.pathRules?.length) {
+    kept = kept.filter((finding) => {
+      const rule = matchingPathRule(finding.path, options.pathRules);
+      return !rule?.minSeverity || severityAtLeast(finding.severity, rule.minSeverity);
+    });
+  }
+  const coverage = makeCoverage(totalFiles, reviewedPaths, skippedBatches, reasons);
   return {
-    result: { summary: buildSummary(summaryBody, kept, provider, target.headSha), findings: kept },
+    result: {
+      summary: buildSummary(summaryBody, kept, provider, target.headSha, coverage),
+      findings: kept,
+      coverage
+    },
     dropped
   };
 }
-function spentTokens(provider) {
-  const usage = provider.usage;
-  return usage ? usage.inputTokens + usage.outputTokens : 0;
+function spentTokens(...providers) {
+  return providers.reduce((total, provider) => {
+    const usage = provider.usage;
+    return total + (usage ? usage.inputTokens + usage.outputTokens : 0);
+  }, 0);
 }
-async function verifyBatch(provider, findings, filesText, log) {
+async function verifyBatch(provider, findings, filesText, log, failureMode) {
   try {
     const raw = await withRetry(
       () => provider.generate(verifySystemPrompt(), verifyUserPrompt(findings, filesText), VERIFY_SCHEMA),
@@ -88237,8 +88375,16 @@ async function verifyBatch(provider, findings, filesText, log) {
     }
     return kept;
   } catch (error51) {
-    log(`Verification pass failed (${error51.message}); keeping all findings.`);
-    return findings;
+    const message = `Verification pass failed (${error51.message})`;
+    if (failureMode === "keep") {
+      log(`${message}; keeping all findings.`);
+      return findings;
+    }
+    if (failureMode === "drop") {
+      log(`${message}; dropping unverified findings.`);
+      return [];
+    }
+    throw new Error(`${message}; aborting because verifyFailure is "abort".`);
   }
 }
 async function consolidateSummaries(provider, summaries, options) {
@@ -88260,7 +88406,7 @@ ${s2}`).join("\n\n"),
     return summaries.join("\n\n");
   }
 }
-function buildSummary(summaryBody, findings, provider, headSha) {
+function buildSummary(summaryBody, findings, provider, headSha, coverage) {
   const counts = /* @__PURE__ */ new Map();
   for (const f3 of findings) counts.set(f3.severity, (counts.get(f3.severity) ?? 0) + 1);
   const countLine = findings.length === 0 ? "No issues found." : ["critical", "warning", "suggestion", "nitpick"].filter((s2) => counts.has(s2)).map((s2) => `${counts.get(s2)} ${s2}`).join(" \xB7 ");
@@ -88270,11 +88416,43 @@ function buildSummary(summaryBody, findings, provider, headSha) {
     summaryBody,
     "",
     `**Findings:** ${countLine}`,
+    `**Coverage:** ${coverage.reviewedFiles}/${coverage.totalFiles} files${coverage.complete ? "" : ` \xB7 partial (${coverage.reasons.join(", ")})`}`,
     "",
     `<sub>Generated by [pr-sage](https://www.npmjs.com/package/pr-sage) using ${provider.name}:${provider.model}</sub>`,
     "",
     headSha ? `${PR_SAGE_MARKER}
-${shaMarker(headSha)}` : PR_SAGE_MARKER
+${shaMarker(headSha)}` : PR_SAGE_MARKER,
+    activeMarker(findings.map(findingKey))
+  ].join("\n");
+}
+function uniquePathCount(files) {
+  return new Set(files.map((file2) => file2.path)).size;
+}
+function makeCoverage(totalFiles, reviewedPaths, skippedBatches, reasons) {
+  const reviewedFiles = reviewedPaths.size;
+  const skippedFiles = Math.max(0, totalFiles - reviewedFiles);
+  return {
+    complete: reasons.length === 0 && skippedFiles === 0,
+    totalFiles,
+    reviewedFiles,
+    skippedFiles,
+    skippedBatches,
+    reasons
+  };
+}
+function matchingPathRule(path8, rules) {
+  return rules.find((rule) => matchesAnyPath(path8, rule.paths));
+}
+function renderPathGuidance(files, rules) {
+  const applicable = rules.filter(
+    (rule) => rule.instructions && files.some((file2) => matchingPathRule(file2.path, [rule]))
+  );
+  if (applicable.length === 0) return "";
+  return [
+    "## Path-specific review rules",
+    ...applicable.map(
+      (rule) => `- ${rule.paths.join(", ")}: ${rule.instructions}`
+    )
   ].join("\n");
 }
 
@@ -88304,6 +88482,8 @@ var configSchema = external_exports.strictObject({
   event: external_exports.enum(["comment", "auto"]).optional(),
   /** Second model pass that rejects unconfirmed findings (doubles cost). */
   verify: external_exports.boolean().optional(),
+  /** Behavior when the verification provider fails (default: abort). */
+  verifyFailure: external_exports.enum(["abort", "keep", "drop"]).optional(),
   /** "text" (default), "json", or "sarif" stdout format. */
   output: external_exports.enum(["text", "json", "sarif"]).optional(),
   /** Inject repo guideline docs (CLAUDE.md, CONTRIBUTING.md) into the prompt (default true). */
@@ -88319,7 +88499,21 @@ var configSchema = external_exports.strictObject({
   /** Skip PRs whose title starts with WIP (default true). */
   skipWip: external_exports.boolean().optional(),
   /** Abort the run once this many total LLM tokens have been spent (cost guard). */
-  maxTokensPerRun: external_exports.number().int().positive().optional()
+  maxTokensPerRun: external_exports.number().int().positive().optional(),
+  /** Fail CI when any part of the configured change could not be reviewed. */
+  failOnIncomplete: external_exports.boolean().optional(),
+  /** Post a GitHub Check Run in addition to the PR review. */
+  checkRun: external_exports.boolean().optional(),
+  /** Use a separate provider/model for the false-positive verification pass. */
+  verifyProvider: external_exports.enum(["anthropic", "openai", "gemini"]).optional(),
+  verifyModel: external_exports.string().optional(),
+  /** Optional path-specific review instructions and severity policies. */
+  pathRules: external_exports.array(external_exports.strictObject({
+    paths: external_exports.array(external_exports.string()).min(1),
+    instructions: external_exports.string().optional(),
+    minSeverity: external_exports.enum(SEVERITIES).optional(),
+    failOn: external_exports.enum(SEVERITIES).optional()
+  })).optional()
 });
 function skipReason(pr, config2) {
   if ((config2.skipDraft ?? true) && pr.draft) return "PR is a draft";
@@ -88366,14 +88560,17 @@ function parseUnifiedDiff(text) {
     const plusLine = lines.find((l) => l.startsWith("+++ "));
     if (!plusLine) continue;
     const newPath = plusLine.slice(4).trim();
-    if (newPath === "/dev/null") continue;
-    const path8 = newPath.startsWith("b/") ? newPath.slice(2) : newPath;
+    const minusLine = lines.find((l) => l.startsWith("--- "));
+    const oldPath = minusLine?.slice(4).trim();
+    const rawPath = newPath === "/dev/null" ? oldPath : newPath;
+    if (!rawPath || rawPath === "/dev/null") continue;
+    const path8 = rawPath.startsWith("a/") || rawPath.startsWith("b/") ? rawPath.slice(2) : rawPath;
     const hunkStart = lines.findIndex((l) => l.startsWith("@@ "));
     if (hunkStart === -1) continue;
     const patch = lines.slice(hunkStart).join("\n");
     files.push({
       path: path8,
-      status: chunk.includes("\nnew file mode") ? "added" : "modified",
+      status: newPath === "/dev/null" ? "removed" : chunk.includes("\nnew file mode") ? "added" : "modified",
       patch,
       commentableLines: commentableLines(patch),
       commentableOldLines: commentableOldLines(patch)
@@ -88398,6 +88595,73 @@ function resolveLocale(locale, ...samples) {
   if (/[぀-ヿ]/.test(text)) return "Japanese";
   if (/[一-鿿]/.test(text)) return "Chinese";
   return "English";
+}
+
+// src/doctor.ts
+import { readFile as readFile3 } from "fs/promises";
+async function runDoctorChecks(config2) {
+  const provider = config2.provider ?? "anthropic";
+  const checks = [
+    { name: "config", ok: true, detail: "configuration is valid" },
+    providerCheck(provider)
+  ];
+  const workflow = await readFile3(".github/workflows/pr-sage.yml", "utf8").catch(() => null);
+  checks.push({
+    name: "workflow",
+    ok: workflow !== null,
+    detail: workflow ? ".github/workflows/pr-sage.yml found" : "workflow file not found"
+  });
+  if (workflow) {
+    checks.push({
+      name: "trusted config",
+      ok: workflow.includes("github.event.pull_request.base.sha"),
+      detail: workflow.includes("github.event.pull_request.base.sha") ? "workflow loads configuration from the trusted base commit" : "checkout the PR base SHA before running pr-sage"
+    });
+    checks.push({
+      name: "permissions",
+      ok: workflow.includes("pull-requests: write") && (!config2.checkRun || workflow.includes("checks: write")),
+      detail: !workflow.includes("pull-requests: write") ? "workflow needs pull-requests: write" : config2.checkRun && !workflow.includes("checks: write") ? "checkRun requires checks: write" : "required write permissions are configured"
+    });
+    checks.push({
+      name: "concurrency",
+      ok: workflow.includes("cancel-in-progress: true"),
+      detail: workflow.includes("cancel-in-progress: true") ? "stale runs are cancelled" : "add per-PR concurrency with cancel-in-progress"
+    });
+  }
+  return checks;
+}
+function providerCheck(provider) {
+  if (provider === "openai" && process.env.OPENAI_BASE_URL) {
+    try {
+      const url2 = new URL(process.env.OPENAI_BASE_URL);
+      return {
+        name: "provider",
+        ok: url2.protocol === "http:" || url2.protocol === "https:",
+        detail: `self-hosted endpoint: ${url2.origin}`
+      };
+    } catch {
+      return { name: "provider", ok: false, detail: "OPENAI_BASE_URL is not a valid URL" };
+    }
+  }
+  const env2 = {
+    anthropic: "ANTHROPIC_API_KEY",
+    openai: "OPENAI_API_KEY",
+    gemini: "GEMINI_API_KEY"
+  }[provider];
+  return {
+    name: "provider",
+    ok: Boolean(process.env[env2]),
+    detail: process.env[env2] ? `${env2} is set` : `${env2} is not set`
+  };
+}
+
+// src/event.ts
+function resolveEvent(mode, findings, complete = true) {
+  if (mode !== "auto" || !complete) return "COMMENT";
+  if (findings.some((finding) => finding.severity === "critical")) {
+    return "REQUEST_CHANGES";
+  }
+  return findings.length === 0 ? "APPROVE" : "COMMENT";
 }
 
 // src/init.ts
@@ -88432,16 +88696,25 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: pr-sage-\${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
-    runs-on: ubuntu-latest
+    runs-on: ${answers.selfHosted ? "self-hosted" : "ubuntu-latest"}
     # Secrets are unavailable on forked PRs; skip instead of failing.
     if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
+      # Load configuration from the trusted base commit, never from PR-controlled code.
+      - uses: actions/checkout@v4
+        with:
+          ref: \${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
       - uses: Kyeom1997/pr-sage@v1
         with:
           provider: ${answers.provider}
-          ${keyInput}: \${{ secrets.${keyEnv} }}
+          ${answers.selfHosted ? `openai-base-url: ${answers.baseUrl ?? "http://localhost:11434/v1"}` : `${keyInput}: \${{ secrets.${keyEnv} }}`}
           locale: ${answers.locale}${answers.failOnCritical ? "\n          fail-on: critical" : ""}
 `;
 }
@@ -88451,8 +88724,8 @@ function secretInstructions(answers, repo) {
   if (answers.selfHosted) {
     return [
       "Self-hosted endpoint: no API key secret needed.",
-      "Set OPENAI_BASE_URL where pr-sage runs, e.g.:",
-      "  OPENAI_BASE_URL=http://localhost:11434/v1"
+      "The generated workflow runs on a self-hosted runner and uses:",
+      `  OPENAI_BASE_URL=${answers.baseUrl ?? "http://localhost:11434/v1"}`
     ].join("\n");
   }
   return [
@@ -88469,7 +88742,8 @@ function toJson(result, provider) {
       provider: provider.name,
       model: provider.model,
       summary: result.summary,
-      findings: result.findings
+      findings: result.findings,
+      coverage: result.coverage
     },
     null,
     2
@@ -88513,7 +88787,11 @@ ${f3.body}` },
                 }
               }
             ]
-          }))
+          })),
+          invocations: result.coverage ? [{
+            executionSuccessful: result.coverage.complete,
+            properties: { coverage: result.coverage }
+          }] : void 0
         }
       ]
     },
@@ -88527,7 +88805,7 @@ var { version: version2 } = createRequire(import.meta.url)("../package.json");
 var program2 = new Command();
 program2.name("pr-sage").description("AI-powered GitHub pull request reviewer").version(version2);
 function addSharedOptions(cmd) {
-  return cmd.option("--provider <name>", "anthropic | openai | gemini").option("-m, --model <id>", "model id (defaults to the provider's recommended model)").option("--locale <lang>", "language for review output (e.g. Korean, English)").option("--exclude <patterns>", "comma-separated globs or substrings to skip (added to defaults)").option("--batch-chars <n>", "max diff characters per model request").option("--config <path>", "config file path (default: .pr-sage.json if present)").option("--min-severity <severity>", "drop findings below this severity").option("--fail-on <severity>", "exit 1 if any finding is at or above this severity").option("--context <mode>", "patch | full \u2014 send full file contents for better accuracy").option("--verify", "second model pass that rejects unconfirmed findings (doubles cost)").option("--paths <globs>", "only review files matching these comma-separated globs").option("--max-tokens <n>", "stop launching new batches once this many tokens are spent").option("--output <format>", "text | json | sarif");
+  return cmd.option("--provider <name>", "anthropic | openai | gemini").option("-m, --model <id>", "model id (defaults to the provider's recommended model)").option("--locale <lang>", "language for review output (e.g. Korean, English)").option("--exclude <patterns>", "comma-separated globs or substrings to skip (added to defaults)").option("--batch-chars <n>", "max diff characters per model request").option("--config <path>", "config file path (default: .pr-sage.json if present)").option("--min-severity <severity>", "drop findings below this severity").option("--fail-on <severity>", "exit 1 if any finding is at or above this severity").option("--context <mode>", "patch | full \u2014 send full file contents for better accuracy").option("--verify", "second model pass that rejects unconfirmed findings").option("--verify-provider <name>", "provider for the verification pass").option("--verify-model <id>", "model for the verification pass").option("--verify-failure <mode>", "abort | keep | drop when verification fails").option("--paths <globs>", "only review files matching these comma-separated globs").option("--max-tokens <n>", "stop launching new batches once this many tokens are spent").option("--output <format>", "text | json | sarif");
 }
 async function resolveCommon(opts) {
   const config2 = await loadConfig(opts.config);
@@ -88543,6 +88821,19 @@ async function resolveCommon(opts) {
   if (!["text", "json", "sarif"].includes(output)) {
     fail2(`Invalid --output "${output}". Use text, json, or sarif.`);
   }
+  const batchCharBudget = parsePositiveInteger(
+    opts.batchChars ?? config2.batchChars ?? 8e4,
+    "--batch-chars"
+  );
+  const maxTokens = opts.maxTokens !== void 0 ? parsePositiveInteger(opts.maxTokens, "--max-tokens") : config2.maxTokensPerRun;
+  const verifyProviderName = opts.verifyProvider ?? config2.verifyProvider;
+  if (verifyProviderName && !["anthropic", "openai", "gemini"].includes(verifyProviderName)) {
+    fail2(`Unknown verification provider "${verifyProviderName}".`);
+  }
+  const verifyFailure = opts.verifyFailure ?? config2.verifyFailure;
+  if (verifyFailure && !["abort", "keep", "drop"].includes(verifyFailure)) {
+    fail2(`Invalid --verify-failure "${verifyFailure}". Use abort, keep, or drop.`);
+  }
   return {
     config: config2,
     providerName,
@@ -88554,20 +88845,25 @@ async function resolveCommon(opts) {
       ...opts.exclude ? String(opts.exclude).split(",").map((s2) => s2.trim()) : []
     ],
     paths: opts.paths ? String(opts.paths).split(",").map((s2) => s2.trim()).filter(Boolean) : config2.paths ?? [],
-    batchCharBudget: Number(opts.batchChars ?? config2.batchChars ?? 8e4),
+    batchCharBudget,
     minSeverity: parseSeverity(opts.minSeverity ?? config2.minSeverity, "--min-severity"),
     failOn: parseSeverity(opts.failOn ?? config2.failOn, "--fail-on"),
     context,
-    verify: opts.verify ?? config2.verify ?? false,
-    maxTokens: opts.maxTokens ? Number(opts.maxTokens) : config2.maxTokensPerRun,
-    output
+    verify: Boolean(opts.verify || config2.verify || verifyProviderName),
+    maxTokens,
+    output,
+    verifier: verifyProviderName ? createProvider(
+      verifyProviderName,
+      opts.verifyModel ?? config2.verifyModel
+    ) : void 0,
+    verifyFailure
   };
 }
-function reportUsage(provider) {
+function reportUsage(provider, label = "LLM") {
   const usage = provider.usage;
   if (usage && usage.calls > 0) {
     console.error(
-      `LLM usage: ${usage.calls} call(s), ${usage.inputTokens} input / ${usage.outputTokens} output tokens`
+      `${label} usage: ${usage.calls} call(s), ${usage.inputTokens} input / ${usage.outputTokens} output tokens`
     );
   }
 }
@@ -88589,7 +88885,7 @@ function printResult(result, provider, output) {
   }
 }
 addSharedOptions(
-  program2.command("review").description("Review a pull request and post inline comments plus a summary").requiredOption("-p, --pr <number>", "pull request number").option("-r, --repo <owner/name>", "repository (defaults to $GITHUB_REPOSITORY)").option("--event <mode>", "comment | auto \u2014 auto approves or requests changes based on findings").option("--no-dedupe", "repost findings already commented by a previous pr-sage review").option("--no-incremental", "always review the full PR diff, not just new commits").option("--force", "review even draft/WIP/skip-labeled PRs").option("--dry-run", "print the review to stdout instead of posting to GitHub")
+  program2.command("review").description("Review a pull request and post inline comments plus a summary").requiredOption("-p, --pr <number>", "pull request number").option("-r, --repo <owner/name>", "repository (defaults to $GITHUB_REPOSITORY)").option("--event <mode>", "comment | auto \u2014 auto approves or requests changes based on findings").option("--no-dedupe", "repost findings already commented by a previous pr-sage review").option("--no-incremental", "always review the full PR diff, not just new commits").option("--force", "review even draft/WIP/skip-labeled PRs").option("--fail-on-incomplete", "fail when any part of the change was not reviewed").option("--check-run", "publish a GitHub Check Run with review annotations").option("--dry-run", "print the review to stdout instead of posting to GitHub")
 ).action(async (opts) => {
   const prNumber = Number(opts.pr);
   if (!Number.isInteger(prNumber) || prNumber <= 0) {
@@ -88610,6 +88906,7 @@ addSharedOptions(
     const github = new GitHubClient(token, owner, repo, config2.githubApiUrl);
     console.error(`Fetching ${owner}/${repo}#${prNumber}...`);
     let pr = await github.fetchPullRequest(prNumber);
+    const totalPrFiles = pr.files.length + pr.missingPatchFiles;
     if (!opts.force) {
       const reason = skipReason(pr, config2);
       if (reason) {
@@ -88648,7 +88945,7 @@ addSharedOptions(
     }
     const instructions = await buildInstructions(
       config2,
-      () => github.fetchRepoGuidelines(pr.headSha)
+      () => github.fetchRepoGuidelines(pr.baseSha)
     );
     const target = {
       title: pr.title,
@@ -88665,17 +88962,53 @@ addSharedOptions(
       minSeverity: settings.minSeverity,
       verify: settings.verify,
       maxTokens: settings.maxTokens,
+      totalFiles: totalPrFiles,
+      missingPatchFiles: pr.missingPatchFiles,
+      verifier: settings.verifier,
+      verifyFailure: settings.verifyFailure,
+      pathRules: config2.pathRules,
       anchorFiles: pr.files,
       fetchContent: settings.context === "full" ? (path8) => github.fetchFileContent(path8, pr.headSha) : void 0
     });
     reportUsage(provider);
-    const gateTripped = settings.failOn !== void 0 && result.findings.some((f3) => severityAtLeast(f3.severity, settings.failOn));
+    if (settings.verifier) reportUsage(settings.verifier, "Verifier");
+    const findingGateTripped = settings.failOn !== void 0 && result.findings.some((f3) => severityAtLeast(f3.severity, settings.failOn));
+    const pathGateTripped = (config2.pathRules ?? []).some(
+      (rule) => rule.failOn !== void 0 && result.findings.some(
+        (finding) => matchesAnyPath(finding.path, rule.paths) && severityAtLeast(finding.severity, rule.failOn)
+      )
+    );
+    const incompleteGateTripped = (Boolean(opts.failOnIncomplete) || config2.failOnIncomplete === true) && result.coverage?.complete === false;
+    const gateTripped = findingGateTripped || pathGateTripped || incompleteGateTripped;
     if (opts.dryRun) {
       printResult(result, provider, settings.output);
       finish(gateTripped, settings.failOn);
     }
     let findingsToPost = result.findings;
+    const currentActive = new Set(result.findings.map(findingKey));
+    let resolvedCount = 0;
+    let unresolvedCount = 0;
     if (history) {
+      unresolvedCount = [...currentActive].filter(
+        (key) => history.activeFingerprints.has(key)
+      ).length;
+      if (result.coverage?.complete !== false) {
+        resolvedCount = [...history.activeFingerprints].filter(
+          (key) => !currentActive.has(key)
+        ).length;
+      } else {
+        for (const key of history.activeFingerprints) currentActive.add(key);
+        result.summary = replaceActiveMarker(result.summary, currentActive);
+      }
+      if (resolvedCount > 0 || unresolvedCount > 0) {
+        const lifecycle = `**Lifecycle:** ${unresolvedCount} unresolved \xB7 ${resolvedCount} resolved since the previous review`;
+        result.summary = result.summary.replace(
+          "<!-- pr-sage -->",
+          `${lifecycle}
+
+<!-- pr-sage -->`
+        );
+      }
       findingsToPost = result.findings.filter((f3) => {
         if (history.fingerprints.has(`${f3.path}|${findingFingerprint(f3)}`)) return false;
         const side = (f3.side ?? "added") === "removed" ? "LEFT" : "RIGHT";
@@ -88688,17 +89021,27 @@ addSharedOptions(
       if (skipped > 0) {
         console.error(`Skipping ${skipped} finding(s) already posted by a previous review.`);
       }
-      if (findingsToPost.length === 0 && history.hasReview && result.findings.length > 0) {
+      if (findingsToPost.length === 0 && history.hasReview && result.findings.length > 0 && resolvedCount === 0) {
         console.error("No new findings since the last pr-sage review; nothing posted.");
         finish(gateTripped, settings.failOn);
       }
     }
-    const event = resolveEvent(eventMode, result.findings);
+    const latestHead = await github.fetchPullRequestHead(prNumber);
+    if (latestHead !== pr.headSha) {
+      throw new Error(
+        `PR head changed during review (${pr.headSha.slice(0, 7)} \u2192 ${latestHead.slice(0, 7)}); refusing to post a stale review.`
+      );
+    }
+    const event = resolveEvent(eventMode, result.findings, result.coverage?.complete ?? true);
     const posted = await github.postReview(prNumber, result.summary, findingsToPost, event);
     if (posted.event !== event) {
       console.error(`GitHub rejected event ${event} (own PR?); posted as COMMENT instead.`);
     }
     console.error(`Review posted (${posted.event}): ${posted.url}`);
+    if (Boolean(opts.checkRun) || config2.checkRun === true) {
+      const checkUrl = await github.postCheckRun(pr.headSha, result, gateTripped);
+      console.error(`Check Run posted: ${checkUrl}`);
+    }
     if (settings.output !== "text") printResult(result, provider, settings.output);
     finish(gateTripped, settings.failOn);
   } catch (error51) {
@@ -88712,6 +89055,7 @@ addSharedOptions(
     const settings = await resolveCommon(opts);
     const { provider } = settings;
     let files = await localDiffFiles(opts.base, Boolean(opts.staged));
+    const totalLocalFiles = files.length;
     if (settings.paths.length > 0) files = includeFiles(files, settings.paths);
     if (files.length === 0) {
       console.error("No local changes to review.");
@@ -88722,7 +89066,7 @@ addSharedOptions(
     const instructions = await buildInstructions(settings.config, async () => {
       const parts = [];
       for (const path8 of ["CLAUDE.md", "CONTRIBUTING.md"]) {
-        const content = await readFile3(path8, "utf8").catch(() => null);
+        const content = await readFile4(path8, "utf8").catch(() => null);
         if (content) parts.push(`--- ${path8} ---
 ${content.slice(0, 6e3)}`);
       }
@@ -88743,17 +89087,36 @@ ${content.slice(0, 6e3)}`);
       minSeverity: settings.minSeverity,
       verify: settings.verify,
       maxTokens: settings.maxTokens,
-      fetchContent: settings.context === "full" ? (path8) => readFile3(path8, "utf8").catch(() => null) : void 0
+      totalFiles: totalLocalFiles,
+      verifier: settings.verifier,
+      verifyFailure: settings.verifyFailure,
+      pathRules: settings.config.pathRules,
+      fetchContent: settings.context === "full" ? (path8) => readFile4(path8, "utf8").catch(() => null) : void 0
     });
     reportUsage(provider);
+    if (settings.verifier) reportUsage(settings.verifier, "Verifier");
     printResult(result, provider, settings.output);
-    const gateTripped = settings.failOn !== void 0 && result.findings.some((f3) => severityAtLeast(f3.severity, settings.failOn));
+    const findingGateTripped = settings.failOn !== void 0 && result.findings.some((f3) => severityAtLeast(f3.severity, settings.failOn));
+    const incompleteGateTripped = settings.config.failOnIncomplete === true && result.coverage?.complete === false;
+    const gateTripped = findingGateTripped || incompleteGateTripped;
     finish(gateTripped, settings.failOn);
   } catch (error51) {
     fail2(error51 instanceof Error ? error51.message : String(error51));
   }
 });
-program2.command("init").description("Set up pr-sage in 30 seconds: config file + GitHub Action workflow").option("--provider <name>", "anthropic | openai | gemini | self-hosted").option("--locale <lang>", "auto | Korean | English | ...").option("--fail-on-critical", "block merges when a critical finding appears").option("-y, --yes", "accept defaults without prompting").action(async (opts) => {
+program2.command("doctor").description("Diagnose configuration, credentials, workflow safety, and permissions").option("--config <path>", "config file path").action(async (opts) => {
+  try {
+    const config2 = await loadConfig(opts.config);
+    const checks = await runDoctorChecks(config2);
+    for (const check2 of checks) {
+      console.log(`${check2.ok ? "\u2713" : "\u2717"} ${check2.name}: ${check2.detail}`);
+    }
+    process.exit(checks.every((check2) => check2.ok) ? 0 : 1);
+  } catch (error51) {
+    fail2(error51 instanceof Error ? error51.message : String(error51));
+  }
+});
+program2.command("init").description("Set up pr-sage in 30 seconds: config file + GitHub Action workflow").option("--provider <name>", "anthropic | openai | gemini | self-hosted").option("--locale <lang>", "auto | Korean | English | ...").option("--base-url <url>", "OpenAI-compatible endpoint for self-hosted mode").option("--fail-on-critical", "block merges when a critical finding appears").option("-y, --yes", "accept defaults without prompting").action(async (opts) => {
   const rl = readline2.createInterface({ input: process.stdin, output: process.stderr });
   const ask = async (question, fallback) => {
     if (opts.yes) return fallback;
@@ -88769,7 +89132,8 @@ program2.command("init").description("Set up pr-sage in 30 seconds: config file 
     }
     const locale = opts.locale ?? await ask("Review language? (auto detects from each PR)", "auto");
     const failOnCritical = Boolean(opts.failOnCritical) || (await ask("Block merges on critical findings? (y/n)", "n")).toLowerCase().startsWith("y");
-    const answers = { provider, selfHosted, locale, failOnCritical };
+    const baseUrl = selfHosted ? opts.baseUrl ?? await ask("OpenAI-compatible endpoint on the self-hosted runner?", "http://localhost:11434/v1") : void 0;
+    const answers = { provider, selfHosted, locale, failOnCritical, baseUrl };
     if (existsSync(CONFIG_FILENAME)) {
       console.error(`\u2713 ${CONFIG_FILENAME} already exists \u2014 leaving it untouched.`);
     } else {
@@ -88820,10 +89184,12 @@ ${guidelines}`);
   }
   return parts.length > 0 ? parts.join("\n\n") : void 0;
 }
-function resolveEvent(mode, findings) {
-  if (mode !== "auto") return "COMMENT";
-  if (findings.some((f3) => f3.severity === "critical")) return "REQUEST_CHANGES";
-  return findings.length === 0 ? "APPROVE" : "COMMENT";
+function parsePositiveInteger(value, flag) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    fail2(`Invalid ${flag} "${String(value)}". Use a positive integer.`);
+  }
+  return parsed;
 }
 function parseSeverity(value, flag) {
   if (value === void 0) return void 0;
@@ -88834,7 +89200,9 @@ function parseSeverity(value, flag) {
 }
 function finish(gateTripped, failOn) {
   if (gateTripped) {
-    console.error(`Quality gate failed: found finding(s) at or above "${failOn}".`);
+    console.error(
+      failOn ? `Quality gate failed: found finding(s) at or above "${failOn}".` : "Quality gate failed: review coverage was incomplete."
+    );
     process.exit(1);
   }
   process.exit(0);

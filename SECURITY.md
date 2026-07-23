@@ -30,9 +30,18 @@ PR titles, descriptions, and diffs are attacker-controllable input: a contributo
 
 Residual risk remains — no LLM is fully injection-proof. Do **not** wire pr-sage's `--event auto` approval as the *sole* required review on security-sensitive repositories; treat AI approval as advisory alongside human review.
 
+The generated Action workflow checks out only
+`${{ github.event.pull_request.base.sha }}`. This ensures `.pr-sage.json`,
+`CLAUDE.md`, and `CONTRIBUTING.md` come from trusted base code rather than from
+the PR being reviewed. The PR title, body, and diff remain untrusted model
+input. pr-sage also rechecks the PR head SHA immediately before posting and
+refuses to publish a stale review.
+
 ## Token scopes
 
 - `GITHUB_TOKEN`: needs `pull-requests: write` and `contents: read` only. In Actions, the default `github.token` with the workflow `permissions` block shown in the README is sufficient — no PAT needed.
+- `checks: write` is additionally required only when `check-run` is enabled.
+- `security-events: write` is additionally required only for SARIF upload.
 - Provider API keys are read from environment variables and are never logged or included in posted comments.
 
 ## Supply chain

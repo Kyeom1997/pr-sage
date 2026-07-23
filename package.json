@@ -1,6 +1,6 @@
 {
   "name": "pr-sage",
-  "version": "0.6.0",
+  "version": "0.8.0",
   "description": "AI-powered GitHub pull request reviewer. Posts inline comments and a summary review using Claude, OpenAI, or Gemini.",
   "keywords": [
     "code-review",
@@ -35,6 +35,7 @@
   },
   "files": [
     "dist",
+    "docs",
     "action.yml",
     "README.md"
   ],
@@ -45,6 +46,7 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "test": "vitest run",
+    "test:e2e": "npm run build && node test/init-e2e.mjs",
     "typecheck": "tsc --noEmit",
     "version": "npm run build && git add -A dist",
     "prepublishOnly": "npm run typecheck && npm run test && npm run build"

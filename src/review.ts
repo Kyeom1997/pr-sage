@@ -2,7 +2,9 @@ import picomatch from "picomatch";
 import type {
   DiffFile,
   Finding,
+  IncompleteReason,
   Provider,
+  ReviewCoverage,
   ReviewResult,
   Severity,
 } from "./types.js";
@@ -21,7 +23,7 @@ import {
 import { commentableLines, commentableOldLines, validateFindings } from "./diff.js";
 import { parseReviewResult, parseSummary, parseVerdicts } from "./validate.js";
 import { withRetry } from "./retry.js";
-import { PR_SAGE_MARKER, shaMarker } from "./github.js";
+import { activeMarker, findingKey, PR_SAGE_MARKER, shaMarker } from "./github.js";
 
 export interface ReviewTarget {
   title: string;
@@ -54,6 +56,23 @@ export interface ReviewOptions {
   anchorFiles?: DiffFile[];
   /** Cost guard: stop launching new batches once this many tokens are spent. */
   maxTokens?: number;
+  /** Total files before path filtering, used for honest coverage reporting. */
+  totalFiles?: number;
+  /** Files omitted by the source API because no textual patch was available. */
+  missingPatchFiles?: number;
+  /** Optional provider used only for the verification pass. */
+  verifier?: Provider;
+  /** Behavior when verification cannot complete. */
+  verifyFailure?: "abort" | "keep" | "drop";
+  /** Path-specific instructions and severity policies. */
+  pathRules?: PathRule[];
+}
+
+export interface PathRule {
+  paths: string[];
+  instructions?: string;
+  minSeverity?: Severity;
+  failOn?: Severity;
 }
 
 export const DEFAULT_EXCLUDES = [
@@ -81,6 +100,10 @@ export function includeFiles(files: DiffFile[], paths: string[]): DiffFile[] {
       return matcher ? matcher(f.path) : f.path.includes(pattern);
     }),
   );
+}
+
+export function matchesAnyPath(path: string, patterns: string[]): boolean {
+  return includeFiles([{ path } as DiffFile], patterns).length > 0;
 }
 
 export function filterFiles(files: DiffFile[], exclude: string[]): DiffFile[] {
@@ -184,12 +207,31 @@ export async function runReview(
   target: ReviewTarget,
   options: ReviewOptions,
 ): Promise<{ result: ReviewResult; dropped: Finding[] }> {
-  const files = splitOversizedFiles(filterFiles(target.files, options.exclude));
+  const filtered = filterFiles(target.files, options.exclude);
+  const excludedFiles = uniquePathCount(target.files) - uniquePathCount(filtered);
+  const files = splitOversizedFiles(filtered);
+  const targetFileCount = uniquePathCount(target.files);
+  const totalFiles = options.totalFiles ?? targetFileCount + (options.missingPatchFiles ?? 0);
+  const reasons: IncompleteReason[] = [];
+  if (totalFiles > targetFileCount + (options.missingPatchFiles ?? 0)) reasons.push("path-filter");
+  if (excludedFiles > 0) reasons.push("excluded");
+  if ((options.missingPatchFiles ?? 0) > 0) reasons.push("missing-patch");
+  const reviewedPaths = new Set<string>();
+  let skippedBatches = 0;
+
   if (files.length === 0) {
+    const coverage = makeCoverage(totalFiles, reviewedPaths, 0, reasons);
     return {
       result: {
-        summary: `No reviewable files in this change.\n\n${PR_SAGE_MARKER}`,
+        summary: buildSummary(
+          "No reviewable files in this change.",
+          [],
+          provider,
+          target.headSha,
+          coverage,
+        ),
         findings: [],
+        coverage,
       },
       dropped: [],
     };
@@ -203,16 +245,22 @@ export async function runReview(
   const system = systemPrompt(options.locale, options.instructions);
   const summaries: string[] = [];
   const findings: Finding[] = [];
-  const startTokens = spentTokens(provider);
+  const providers = options.verifier ? [provider, options.verifier] : [provider];
+  const startTokens = spentTokens(...providers);
   let truncatedByBudget = false;
 
   for (const [i, batch] of batches.entries()) {
-    if (options.maxTokens !== undefined && spentTokens(provider) - startTokens >= options.maxTokens) {
+    if (
+      options.maxTokens !== undefined
+      && spentTokens(...providers) - startTokens >= options.maxTokens
+    ) {
       const skipped = batches.length - i;
       options.log(
         `Token budget (${options.maxTokens}) reached — stopping before ${skipped} remaining batch(es).`,
       );
       truncatedByBudget = true;
+      skippedBatches = skipped;
+      if (!reasons.includes("token-budget")) reasons.push("token-budget");
       break;
     }
     if (batches.length > 1) options.log(`Batch ${i + 1}/${batches.length}: ${batch.length} file(s)`);
@@ -230,7 +278,27 @@ export async function runReview(
     // Later batches see earlier batches' summaries, so cross-file
     // inconsistencies have at least a summary-level chance of being caught.
     const priorContext = summaries.length > 0 ? summaries.join("\n\n") : undefined;
-    const filesText = renderFiles(batch, contents);
+    let filesText = renderFiles(batch, contents);
+    const pathGuidance = renderPathGuidance(batch, options.pathRules ?? []);
+    if (pathGuidance) filesText = `${pathGuidance}\n\n${filesText}`;
+    const estimatedInputTokens = Math.ceil(
+      (
+        system.length
+        + userPrompt(target.title, target.body, filesText, priorContext).length
+      ) / 4,
+    );
+    if (
+      options.maxTokens !== undefined
+      && spentTokens(...providers) - startTokens + estimatedInputTokens > options.maxTokens
+    ) {
+      skippedBatches = batches.length - i;
+      truncatedByBudget = true;
+      if (!reasons.includes("token-budget")) reasons.push("token-budget");
+      options.log(
+        `Token budget (${options.maxTokens}) would be exceeded by batch ${i + 1}; stopping before ${skippedBatches} remaining batch(es).`,
+      );
+      break;
+    }
     const raw = await withRetry(
       () =>
         provider.generate(
@@ -244,14 +312,25 @@ export async function runReview(
 
     let batchFindings = result.findings;
     if (options.verify && batchFindings.length > 0) {
-      batchFindings = await verifyBatch(provider, batchFindings, filesText, options.log);
+      batchFindings = await verifyBatch(
+        options.verifier ?? provider,
+        batchFindings,
+        filesText,
+        options.log,
+        options.verifyFailure ?? "abort",
+      );
     }
 
     summaries.push(result.summary);
     findings.push(...batchFindings);
+    for (const file of batch) reviewedPaths.add(file.path);
   }
 
-  let summaryBody = await consolidateSummaries(provider, summaries, options);
+  let summaryBody =
+    options.maxTokens !== undefined
+    && spentTokens(...providers) - startTokens >= options.maxTokens
+      ? summaries.join("\n\n")
+      : await consolidateSummaries(provider, summaries, options);
   if (truncatedByBudget) {
     summaryBody += `\n\n> ⚠️ Review stopped early: the ${options.maxTokens}-token budget for this run was reached, so part of the diff was not reviewed.`;
   }
@@ -269,16 +348,30 @@ export async function runReview(
       options.log(`Filtered ${before - kept.length} finding(s) below ${options.minSeverity}.`);
     }
   }
+  if (options.pathRules?.length) {
+    kept = kept.filter((finding) => {
+      const rule = matchingPathRule(finding.path, options.pathRules!);
+      return !rule?.minSeverity || severityAtLeast(finding.severity, rule.minSeverity);
+    });
+  }
+
+  const coverage = makeCoverage(totalFiles, reviewedPaths, skippedBatches, reasons);
 
   return {
-    result: { summary: buildSummary(summaryBody, kept, provider, target.headSha), findings: kept },
+    result: {
+      summary: buildSummary(summaryBody, kept, provider, target.headSha, coverage),
+      findings: kept,
+      coverage,
+    },
     dropped,
   };
 }
 
-function spentTokens(provider: Provider): number {
-  const usage = provider.usage;
-  return usage ? usage.inputTokens + usage.outputTokens : 0;
+function spentTokens(...providers: Provider[]): number {
+  return providers.reduce((total, provider) => {
+    const usage = provider.usage;
+    return total + (usage ? usage.inputTokens + usage.outputTokens : 0);
+  }, 0);
 }
 
 async function verifyBatch(
@@ -286,6 +379,7 @@ async function verifyBatch(
   findings: Finding[],
   filesText: string,
   log: (message: string) => void,
+  failureMode: "abort" | "keep" | "drop",
 ): Promise<Finding[]> {
   try {
     const raw = await withRetry(
@@ -303,8 +397,16 @@ async function verifyBatch(
     }
     return kept;
   } catch (error) {
-    log(`Verification pass failed (${(error as Error).message}); keeping all findings.`);
-    return findings;
+    const message = `Verification pass failed (${(error as Error).message})`;
+    if (failureMode === "keep") {
+      log(`${message}; keeping all findings.`);
+      return findings;
+    }
+    if (failureMode === "drop") {
+      log(`${message}; dropping unverified findings.`);
+      return [];
+    }
+    throw new Error(`${message}; aborting because verifyFailure is "abort".`);
   }
 }
 
@@ -336,6 +438,7 @@ function buildSummary(
   findings: Finding[],
   provider: Provider,
   headSha: string,
+  coverage: ReviewCoverage,
 ): string {
   const counts = new Map<string, number>();
   for (const f of findings) counts.set(f.severity, (counts.get(f.severity) ?? 0) + 1);
@@ -353,9 +456,52 @@ function buildSummary(
     summaryBody,
     "",
     `**Findings:** ${countLine}`,
+    `**Coverage:** ${coverage.reviewedFiles}/${coverage.totalFiles} files${
+      coverage.complete ? "" : ` · partial (${coverage.reasons.join(", ")})`
+    }`,
     "",
     `<sub>Generated by [pr-sage](https://www.npmjs.com/package/pr-sage) using ${provider.name}:${provider.model}</sub>`,
     "",
     headSha ? `${PR_SAGE_MARKER}\n${shaMarker(headSha)}` : PR_SAGE_MARKER,
+    activeMarker(findings.map(findingKey)),
+  ].join("\n");
+}
+
+function uniquePathCount(files: DiffFile[]): number {
+  return new Set(files.map((file) => file.path)).size;
+}
+
+function makeCoverage(
+  totalFiles: number,
+  reviewedPaths: Set<string>,
+  skippedBatches: number,
+  reasons: IncompleteReason[],
+): ReviewCoverage {
+  const reviewedFiles = reviewedPaths.size;
+  const skippedFiles = Math.max(0, totalFiles - reviewedFiles);
+  return {
+    complete: reasons.length === 0 && skippedFiles === 0,
+    totalFiles,
+    reviewedFiles,
+    skippedFiles,
+    skippedBatches,
+    reasons,
+  };
+}
+
+function matchingPathRule(path: string, rules: PathRule[]): PathRule | undefined {
+  return rules.find((rule) => matchesAnyPath(path, rule.paths));
+}
+
+function renderPathGuidance(files: DiffFile[], rules: PathRule[]): string {
+  const applicable = rules.filter(
+    (rule) => rule.instructions && files.some((file) => matchingPathRule(file.path, [rule])),
+  );
+  if (applicable.length === 0) return "";
+  return [
+    "## Path-specific review rules",
+    ...applicable.map(
+      (rule) => `- ${rule.paths.join(", ")}: ${rule.instructions}`,
+    ),
   ].join("\n");
 }

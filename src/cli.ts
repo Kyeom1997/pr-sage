@@ -6,12 +6,27 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import * as readline from "node:readline/promises";
 import { Command } from "commander";
-import { GitHubClient, resolveRepo, formatComment, findingFingerprint } from "./github.js";
+import {
+  GitHubClient,
+  findingFingerprint,
+  findingKey,
+  formatComment,
+  replaceActiveMarker,
+  resolveRepo,
+} from "./github.js";
 import { createProvider } from "./providers/index.js";
-import { DEFAULT_EXCLUDES, includeFiles, runReview, type ReviewTarget } from "./review.js";
+import {
+  DEFAULT_EXCLUDES,
+  includeFiles,
+  matchesAnyPath,
+  runReview,
+  type ReviewTarget,
+} from "./review.js";
 import { loadConfig, skipReason, CONFIG_FILENAME, type PrSageConfig } from "./config.js";
 import { localDiffFiles } from "./localdiff.js";
 import { resolveLocale } from "./locale.js";
+import { runDoctorChecks } from "./doctor.js";
+import { resolveEvent } from "./event.js";
 import {
   buildConfig,
   buildWorkflow,
@@ -23,10 +38,8 @@ import { toJson, toSarif, type OutputFormat } from "./output.js";
 import {
   SEVERITIES,
   severityAtLeast,
-  type Finding,
   type Provider,
   type ProviderName,
-  type ReviewEvent,
   type ReviewResult,
   type Severity,
 } from "./types.js";
@@ -51,7 +64,10 @@ function addSharedOptions(cmd: Command): Command {
     .option("--min-severity <severity>", "drop findings below this severity")
     .option("--fail-on <severity>", "exit 1 if any finding is at or above this severity")
     .option("--context <mode>", "patch | full — send full file contents for better accuracy")
-    .option("--verify", "second model pass that rejects unconfirmed findings (doubles cost)")
+    .option("--verify", "second model pass that rejects unconfirmed findings")
+    .option("--verify-provider <name>", "provider for the verification pass")
+    .option("--verify-model <id>", "model for the verification pass")
+    .option("--verify-failure <mode>", "abort | keep | drop when verification fails")
     .option("--paths <globs>", "only review files matching these comma-separated globs")
     .option("--max-tokens <n>", "stop launching new batches once this many tokens are spent")
     .option("--output <format>", "text | json | sarif");
@@ -71,6 +87,8 @@ interface CommonSettings {
   verify: boolean;
   maxTokens?: number;
   output: OutputFormat;
+  verifier?: Provider;
+  verifyFailure?: "abort" | "keep" | "drop";
 }
 
 async function resolveCommon(opts: Record<string, unknown>): Promise<CommonSettings> {
@@ -88,6 +106,22 @@ async function resolveCommon(opts: Record<string, unknown>): Promise<CommonSetti
   if (!["text", "json", "sarif"].includes(output)) {
     fail(`Invalid --output "${output}". Use text, json, or sarif.`);
   }
+  const batchCharBudget = parsePositiveInteger(
+    opts.batchChars ?? config.batchChars ?? 80_000,
+    "--batch-chars",
+  );
+  const maxTokens = opts.maxTokens !== undefined
+    ? parsePositiveInteger(opts.maxTokens, "--max-tokens")
+    : config.maxTokensPerRun;
+  const verifyProviderName = (opts.verifyProvider as ProviderName | undefined)
+    ?? config.verifyProvider;
+  if (verifyProviderName && !["anthropic", "openai", "gemini"].includes(verifyProviderName)) {
+    fail(`Unknown verification provider "${verifyProviderName}".`);
+  }
+  const verifyFailure = (opts.verifyFailure as string | undefined) ?? config.verifyFailure;
+  if (verifyFailure && !["abort", "keep", "drop"].includes(verifyFailure)) {
+    fail(`Invalid --verify-failure "${verifyFailure}". Use abort, keep, or drop.`);
+  }
 
   return {
     config,
@@ -102,23 +136,28 @@ async function resolveCommon(opts: Record<string, unknown>): Promise<CommonSetti
     paths: opts.paths
       ? String(opts.paths).split(",").map((s) => s.trim()).filter(Boolean)
       : (config.paths ?? []),
-    batchCharBudget: Number(opts.batchChars ?? config.batchChars ?? 80_000),
+    batchCharBudget,
     minSeverity: parseSeverity((opts.minSeverity as string) ?? config.minSeverity, "--min-severity"),
     failOn: parseSeverity((opts.failOn as string) ?? config.failOn, "--fail-on"),
     context,
-    verify: (opts.verify as boolean | undefined) ?? config.verify ?? false,
-    maxTokens: opts.maxTokens
-      ? Number(opts.maxTokens)
-      : config.maxTokensPerRun,
+    verify: Boolean(opts.verify || config.verify || verifyProviderName),
+    maxTokens,
     output,
+    verifier: verifyProviderName
+      ? createProvider(
+          verifyProviderName,
+          (opts.verifyModel as string | undefined) ?? config.verifyModel,
+        )
+      : undefined,
+    verifyFailure: verifyFailure as CommonSettings["verifyFailure"],
   };
 }
 
-function reportUsage(provider: Provider): void {
+function reportUsage(provider: Provider, label = "LLM"): void {
   const usage = provider.usage;
   if (usage && usage.calls > 0) {
     console.error(
-      `LLM usage: ${usage.calls} call(s), ${usage.inputTokens} input / ${usage.outputTokens} output tokens`,
+      `${label} usage: ${usage.calls} call(s), ${usage.inputTokens} input / ${usage.outputTokens} output tokens`,
     );
   }
 }
@@ -151,6 +190,8 @@ addSharedOptions(
     .option("--no-dedupe", "repost findings already commented by a previous pr-sage review")
     .option("--no-incremental", "always review the full PR diff, not just new commits")
     .option("--force", "review even draft/WIP/skip-labeled PRs")
+    .option("--fail-on-incomplete", "fail when any part of the change was not reviewed")
+    .option("--check-run", "publish a GitHub Check Run with review annotations")
     .option("--dry-run", "print the review to stdout instead of posting to GitHub"),
 ).action(async (opts) => {
   const prNumber = Number(opts.pr);
@@ -177,6 +218,7 @@ addSharedOptions(
 
     console.error(`Fetching ${owner}/${repo}#${prNumber}...`);
     let pr = await github.fetchPullRequest(prNumber);
+    const totalPrFiles = pr.files.length + pr.missingPatchFiles;
 
     if (!opts.force) {
       const reason = skipReason(pr, config);
@@ -220,7 +262,7 @@ addSharedOptions(
     }
 
     const instructions = await buildInstructions(config, () =>
-      github.fetchRepoGuidelines(pr.headSha),
+      github.fetchRepoGuidelines(pr.baseSha),
     );
 
     const target: ReviewTarget = {
@@ -238,6 +280,11 @@ addSharedOptions(
       minSeverity: settings.minSeverity,
       verify: settings.verify,
       maxTokens: settings.maxTokens,
+      totalFiles: totalPrFiles,
+      missingPatchFiles: pr.missingPatchFiles,
+      verifier: settings.verifier,
+      verifyFailure: settings.verifyFailure,
+      pathRules: config.pathRules,
       anchorFiles: pr.files,
       fetchContent:
         settings.context === "full"
@@ -246,9 +293,23 @@ addSharedOptions(
     });
 
     reportUsage(provider);
-    const gateTripped =
+    if (settings.verifier) reportUsage(settings.verifier, "Verifier");
+    const findingGateTripped =
       settings.failOn !== undefined &&
       result.findings.some((f) => severityAtLeast(f.severity, settings.failOn!));
+    const pathGateTripped = (config.pathRules ?? []).some(
+      (rule) =>
+        rule.failOn !== undefined
+        && result.findings.some(
+          (finding) =>
+            matchesAnyPath(finding.path, rule.paths)
+            && severityAtLeast(finding.severity, rule.failOn!),
+        ),
+    );
+    const incompleteGateTripped =
+      (Boolean(opts.failOnIncomplete) || config.failOnIncomplete === true)
+      && result.coverage?.complete === false;
+    const gateTripped = findingGateTripped || pathGateTripped || incompleteGateTripped;
 
     if (opts.dryRun) {
       printResult(result, provider, settings.output);
@@ -256,7 +317,28 @@ addSharedOptions(
     }
 
     let findingsToPost = result.findings;
+    const currentActive = new Set(result.findings.map(findingKey));
+    let resolvedCount = 0;
+    let unresolvedCount = 0;
     if (history) {
+      unresolvedCount = [...currentActive].filter((key) =>
+        history.activeFingerprints.has(key)
+      ).length;
+      if (result.coverage?.complete !== false) {
+        resolvedCount = [...history.activeFingerprints].filter(
+          (key) => !currentActive.has(key),
+        ).length;
+      } else {
+        for (const key of history.activeFingerprints) currentActive.add(key);
+        result.summary = replaceActiveMarker(result.summary, currentActive);
+      }
+      if (resolvedCount > 0 || unresolvedCount > 0) {
+        const lifecycle = `**Lifecycle:** ${unresolvedCount} unresolved · ${resolvedCount} resolved since the previous review`;
+        result.summary = result.summary.replace(
+          "<!-- pr-sage -->",
+          `${lifecycle}\n\n<!-- pr-sage -->`,
+        );
+      }
       findingsToPost = result.findings.filter((f) => {
         // Same issue reposted at a shifted line — fingerprint catches it.
         if (history.fingerprints.has(`${f.path}|${findingFingerprint(f)}`)) return false;
@@ -272,18 +354,34 @@ addSharedOptions(
       if (skipped > 0) {
         console.error(`Skipping ${skipped} finding(s) already posted by a previous review.`);
       }
-      if (findingsToPost.length === 0 && history.hasReview && result.findings.length > 0) {
+      if (
+        findingsToPost.length === 0
+        && history.hasReview
+        && result.findings.length > 0
+        && resolvedCount === 0
+      ) {
         console.error("No new findings since the last pr-sage review; nothing posted.");
         finish(gateTripped, settings.failOn);
       }
     }
 
-    const event = resolveEvent(eventMode, result.findings);
+    const latestHead = await github.fetchPullRequestHead(prNumber);
+    if (latestHead !== pr.headSha) {
+      throw new Error(
+        `PR head changed during review (${pr.headSha.slice(0, 7)} → ${latestHead.slice(0, 7)}); refusing to post a stale review.`,
+      );
+    }
+
+    const event = resolveEvent(eventMode, result.findings, result.coverage?.complete ?? true);
     const posted = await github.postReview(prNumber, result.summary, findingsToPost, event);
     if (posted.event !== event) {
       console.error(`GitHub rejected event ${event} (own PR?); posted as COMMENT instead.`);
     }
     console.error(`Review posted (${posted.event}): ${posted.url}`);
+    if (Boolean(opts.checkRun) || config.checkRun === true) {
+      const checkUrl = await github.postCheckRun(pr.headSha, result, gateTripped);
+      console.error(`Check Run posted: ${checkUrl}`);
+    }
     if (settings.output !== "text") printResult(result, provider, settings.output);
     finish(gateTripped, settings.failOn);
   } catch (error) {
@@ -303,6 +401,7 @@ addSharedOptions(
     const { provider } = settings;
 
     let files = await localDiffFiles(opts.base, Boolean(opts.staged));
+    const totalLocalFiles = files.length;
     if (settings.paths.length > 0) files = includeFiles(files, settings.paths);
     if (files.length === 0) {
       console.error("No local changes to review.");
@@ -339,6 +438,10 @@ addSharedOptions(
       minSeverity: settings.minSeverity,
       verify: settings.verify,
       maxTokens: settings.maxTokens,
+      totalFiles: totalLocalFiles,
+      verifier: settings.verifier,
+      verifyFailure: settings.verifyFailure,
+      pathRules: settings.config.pathRules,
       fetchContent:
         settings.context === "full"
           ? (path) => readFile(path, "utf8").catch(() => null)
@@ -346,10 +449,14 @@ addSharedOptions(
     });
 
     reportUsage(provider);
+    if (settings.verifier) reportUsage(settings.verifier, "Verifier");
     printResult(result, provider, settings.output);
-    const gateTripped =
+    const findingGateTripped =
       settings.failOn !== undefined &&
       result.findings.some((f) => severityAtLeast(f.severity, settings.failOn!));
+    const incompleteGateTripped =
+      settings.config.failOnIncomplete === true && result.coverage?.complete === false;
+    const gateTripped = findingGateTripped || incompleteGateTripped;
     finish(gateTripped, settings.failOn);
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
@@ -357,10 +464,28 @@ addSharedOptions(
 });
 
 program
+  .command("doctor")
+  .description("Diagnose configuration, credentials, workflow safety, and permissions")
+  .option("--config <path>", "config file path")
+  .action(async (opts) => {
+    try {
+      const config = await loadConfig(opts.config);
+      const checks = await runDoctorChecks(config);
+      for (const check of checks) {
+        console.log(`${check.ok ? "✓" : "✗"} ${check.name}: ${check.detail}`);
+      }
+      process.exit(checks.every((check) => check.ok) ? 0 : 1);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+  });
+
+program
   .command("init")
   .description("Set up pr-sage in 30 seconds: config file + GitHub Action workflow")
   .option("--provider <name>", "anthropic | openai | gemini | self-hosted")
   .option("--locale <lang>", "auto | Korean | English | ...")
+  .option("--base-url <url>", "OpenAI-compatible endpoint for self-hosted mode")
   .option("--fail-on-critical", "block merges when a critical finding appears")
   .option("-y, --yes", "accept defaults without prompting")
   .action(async (opts) => {
@@ -384,8 +509,12 @@ program
         ?? (await ask("Review language? (auto detects from each PR)", "auto"));
       const failOnCritical = Boolean(opts.failOnCritical)
         || (await ask("Block merges on critical findings? (y/n)", "n")).toLowerCase().startsWith("y");
+      const baseUrl = selfHosted
+        ? ((opts.baseUrl as string | undefined)
+          ?? (await ask("OpenAI-compatible endpoint on the self-hosted runner?", "http://localhost:11434/v1")))
+        : undefined;
 
-      const answers: InitAnswers = { provider, selfHosted, locale, failOnCritical };
+      const answers: InitAnswers = { provider, selfHosted, locale, failOnCritical, baseUrl };
 
       if (existsSync(CONFIG_FILENAME)) {
         console.error(`✓ ${CONFIG_FILENAME} already exists — leaving it untouched.`);
@@ -448,10 +577,12 @@ async function buildInstructions(
   return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
-function resolveEvent(mode: string, findings: Finding[]): ReviewEvent {
-  if (mode !== "auto") return "COMMENT";
-  if (findings.some((f) => f.severity === "critical")) return "REQUEST_CHANGES";
-  return findings.length === 0 ? "APPROVE" : "COMMENT";
+function parsePositiveInteger(value: unknown, flag: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    fail(`Invalid ${flag} "${String(value)}". Use a positive integer.`);
+  }
+  return parsed;
 }
 
 function parseSeverity(value: string | undefined, flag: string): Severity | undefined {
@@ -464,7 +595,11 @@ function parseSeverity(value: string | undefined, flag: string): Severity | unde
 
 function finish(gateTripped: boolean, failOn: Severity | undefined): never {
   if (gateTripped) {
-    console.error(`Quality gate failed: found finding(s) at or above "${failOn}".`);
+    console.error(
+      failOn
+        ? `Quality gate failed: found finding(s) at or above "${failOn}".`
+        : "Quality gate failed: review coverage was incomplete.",
+    );
     process.exit(1);
   }
   process.exit(0);

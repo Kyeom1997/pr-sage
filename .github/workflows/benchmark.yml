@@ -1,0 +1,62 @@
+name: Quality Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "Comma-separated public repositories"
+        required: true
+        default: "fastify/fastify,honojs/hono"
+      per_repo:
+        description: "PRs sampled per repository"
+        required: true
+        default: "3"
+      mode:
+        description: "noise or recall"
+        required: true
+        type: choice
+        options: [noise, recall]
+        default: noise
+      provider:
+        description: "anthropic, openai, or gemini"
+        required: true
+        type: choice
+        options: [gemini, openai, anthropic]
+        default: gemini
+      model:
+        description: "Optional model override"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Run benchmark
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          BENCH_REPOS: ${{ inputs.repos }}
+          BENCH_PER_REPO: ${{ inputs.per_repo }}
+          BENCH_MODE: ${{ inputs.mode }}
+          BENCH_PROVIDER: ${{ inputs.provider }}
+          BENCH_MODEL: ${{ inputs.model }}
+        run: |
+          ARGS=(--repos "$BENCH_REPOS" --per-repo "$BENCH_PER_REPO" --mode "$BENCH_MODE" --provider "$BENCH_PROVIDER")
+          if [ -n "$BENCH_MODEL" ]; then ARGS+=(--model "$BENCH_MODEL"); fi
+          node scripts/bench.mjs "${ARGS[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr-sage-benchmark-${{ inputs.mode }}
+          path: bench-results/run-*
