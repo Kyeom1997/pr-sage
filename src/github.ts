@@ -90,6 +90,8 @@ export class GitHubClient {
     const pr = await this.request<{
       title: string;
       body: string | null;
+      draft?: boolean;
+      labels?: Array<{ name: string }>;
       base: { ref: string };
       head: { ref: string; sha: string };
     }>(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}`);
@@ -119,6 +121,8 @@ export class GitHubClient {
       baseRef: pr.base.ref,
       headRef: pr.head.ref,
       headSha: pr.head.sha,
+      draft: pr.draft ?? false,
+      labels: (pr.labels ?? []).map((l) => l.name),
       files,
     };
   }

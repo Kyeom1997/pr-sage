@@ -36745,7 +36745,11 @@ var require_picomatch2 = __commonJS({
 
 // src/cli.ts
 import { createRequire } from "module";
-import { readFile as readFile3 } from "fs/promises";
+import { readFile as readFile3, writeFile as writeFile2, mkdir as mkdir3 } from "fs/promises";
+import { existsSync } from "fs";
+import { execFile as execFile3 } from "child_process";
+import { promisify as promisify4 } from "util";
+import * as readline2 from "readline/promises";
 
 // node_modules/commander/lib/error.js
 var CommanderError = class extends Error {
@@ -40358,6 +40362,8 @@ var GitHubClient = class {
       baseRef: pr.base.ref,
       headRef: pr.head.ref,
       headSha: pr.head.sha,
+      draft: pr.draft ?? false,
+      labels: (pr.labels ?? []).map((l) => l.name),
       files
     };
   }
@@ -88035,6 +88041,18 @@ var DEFAULT_EXCLUDES = [
   "vendor/"
 ];
 var GLOB_CHARS = /[*?[\]{}()!]/;
+function includeFiles(files, paths) {
+  if (paths.length === 0) return files;
+  const matchers = paths.map(
+    (pattern) => GLOB_CHARS.test(pattern) ? (0, import_picomatch.default)(pattern, { dot: true }) : null
+  );
+  return files.filter(
+    (f3) => paths.some((pattern, i2) => {
+      const matcher = matchers[i2];
+      return matcher ? matcher(f3.path) : f3.path.includes(pattern);
+    })
+  );
+}
 function filterFiles(files, exclude) {
   const matchers = exclude.map(
     (pattern) => GLOB_CHARS.test(pattern) ? (0, import_picomatch.default)(pattern, { dot: true }) : null
@@ -88138,7 +88156,17 @@ ${PR_SAGE_MARKER}`,
   const system = systemPrompt(options.locale, options.instructions);
   const summaries = [];
   const findings = [];
+  const startTokens = spentTokens(provider);
+  let truncatedByBudget = false;
   for (const [i2, batch] of batches.entries()) {
+    if (options.maxTokens !== void 0 && spentTokens(provider) - startTokens >= options.maxTokens) {
+      const skipped = batches.length - i2;
+      options.log(
+        `Token budget (${options.maxTokens}) reached \u2014 stopping before ${skipped} remaining batch(es).`
+      );
+      truncatedByBudget = true;
+      break;
+    }
     if (batches.length > 1) options.log(`Batch ${i2 + 1}/${batches.length}: ${batch.length} file(s)`);
     let contents;
     if (options.fetchContent) {
@@ -88167,7 +88195,12 @@ ${PR_SAGE_MARKER}`,
     summaries.push(result.summary);
     findings.push(...batchFindings);
   }
-  const summaryBody = await consolidateSummaries(provider, summaries, options);
+  let summaryBody = await consolidateSummaries(provider, summaries, options);
+  if (truncatedByBudget) {
+    summaryBody += `
+
+> \u26A0\uFE0F Review stopped early: the ${options.maxTokens}-token budget for this run was reached, so part of the diff was not reviewed.`;
+  }
   const { valid, dropped } = validateFindings(findings, options.anchorFiles ?? files);
   if (dropped.length > 0) {
     options.log(`Dropped ${dropped.length} finding(s) referencing lines outside the diff.`);
@@ -88184,6 +88217,10 @@ ${PR_SAGE_MARKER}`,
     result: { summary: buildSummary(summaryBody, kept, provider, target.headSha), findings: kept },
     dropped
   };
+}
+function spentTokens(provider) {
+  const usage = provider.usage;
+  return usage ? usage.inputTokens + usage.outputTokens : 0;
 }
 async function verifyBatch(provider, findings, filesText, log) {
   try {
@@ -88272,8 +88309,28 @@ var configSchema = external_exports.strictObject({
   /** Inject repo guideline docs (CLAUDE.md, CONTRIBUTING.md) into the prompt (default true). */
   repoContext: external_exports.boolean().optional(),
   /** GitHub API base URL for GitHub Enterprise (default: $GITHUB_API_URL or api.github.com). */
-  githubApiUrl: external_exports.string().optional()
+  githubApiUrl: external_exports.string().optional(),
+  /** Only review files matching these globs (monorepo scoping). */
+  paths: external_exports.array(external_exports.string()).optional(),
+  /** Skip PRs carrying any of these labels (default: ["skip-review", "no-review"]). */
+  skipLabels: external_exports.array(external_exports.string()).optional(),
+  /** Skip draft PRs (default true). */
+  skipDraft: external_exports.boolean().optional(),
+  /** Skip PRs whose title starts with WIP (default true). */
+  skipWip: external_exports.boolean().optional(),
+  /** Abort the run once this many total LLM tokens have been spent (cost guard). */
+  maxTokensPerRun: external_exports.number().int().positive().optional()
 });
+function skipReason(pr, config2) {
+  if ((config2.skipDraft ?? true) && pr.draft) return "PR is a draft";
+  if ((config2.skipWip ?? true) && /^\s*(\[wip\]|wip\b[:\s-]?)/i.test(pr.title)) {
+    return "PR title is marked WIP";
+  }
+  const skipLabels = config2.skipLabels ?? ["skip-review", "no-review"];
+  const hit = pr.labels.find((label) => skipLabels.includes(label));
+  if (hit) return `PR carries the "${hit}" label`;
+  return null;
+}
 var CONFIG_FILENAME = ".pr-sage.json";
 async function loadConfig(explicitPath) {
   const file2 = resolve4(explicitPath ?? CONFIG_FILENAME);
@@ -88331,6 +88388,78 @@ async function localDiffFiles(base, staged) {
     maxBuffer: 64 * 1024 * 1024
   });
   return parseUnifiedDiff(stdout);
+}
+
+// src/locale.ts
+function resolveLocale(locale, ...samples) {
+  if (locale !== "auto") return locale;
+  const text = samples.filter(Boolean).join(" ");
+  if (/[가-힣]/.test(text)) return "Korean";
+  if (/[぀-ヿ]/.test(text)) return "Japanese";
+  if (/[一-鿿]/.test(text)) return "Chinese";
+  return "English";
+}
+
+// src/init.ts
+var PROVIDER_KEY_ENV = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  gemini: "GEMINI_API_KEY"
+};
+var ACTION_KEY_INPUT = {
+  anthropic: "anthropic-api-key",
+  openai: "openai-api-key",
+  gemini: "gemini-api-key"
+};
+function buildConfig(answers) {
+  const config2 = {
+    provider: answers.provider,
+    locale: answers.locale
+  };
+  if (answers.failOnCritical) config2.failOn = "critical";
+  return `${JSON.stringify(config2, null, 2)}
+`;
+}
+function buildWorkflow(answers) {
+  const keyEnv = PROVIDER_KEY_ENV[answers.provider];
+  const keyInput = ACTION_KEY_INPUT[answers.provider];
+  return `name: AI Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Secrets are unavailable on forked PRs; skip instead of failing.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: Kyeom1997/pr-sage@v1
+        with:
+          provider: ${answers.provider}
+          ${keyInput}: \${{ secrets.${keyEnv} }}
+          locale: ${answers.locale}${answers.failOnCritical ? "\n          fail-on: critical" : ""}
+`;
+}
+function secretInstructions(answers, repo) {
+  const keyEnv = PROVIDER_KEY_ENV[answers.provider];
+  const repoFlag = repo ? ` --repo ${repo}` : "";
+  if (answers.selfHosted) {
+    return [
+      "Self-hosted endpoint: no API key secret needed.",
+      "Set OPENAI_BASE_URL where pr-sage runs, e.g.:",
+      "  OPENAI_BASE_URL=http://localhost:11434/v1"
+    ].join("\n");
+  }
+  return [
+    `Register your ${keyEnv} as a repository secret so the Action can use it:`,
+    `  gh secret set ${keyEnv}${repoFlag}`,
+    "(paste the key when prompted \u2014 never commit it)"
+  ].join("\n");
 }
 
 // src/output.ts
@@ -88398,7 +88527,7 @@ var { version: version2 } = createRequire(import.meta.url)("../package.json");
 var program2 = new Command();
 program2.name("pr-sage").description("AI-powered GitHub pull request reviewer").version(version2);
 function addSharedOptions(cmd) {
-  return cmd.option("--provider <name>", "anthropic | openai | gemini").option("-m, --model <id>", "model id (defaults to the provider's recommended model)").option("--locale <lang>", "language for review output (e.g. Korean, English)").option("--exclude <patterns>", "comma-separated globs or substrings to skip (added to defaults)").option("--batch-chars <n>", "max diff characters per model request").option("--config <path>", "config file path (default: .pr-sage.json if present)").option("--min-severity <severity>", "drop findings below this severity").option("--fail-on <severity>", "exit 1 if any finding is at or above this severity").option("--context <mode>", "patch | full \u2014 send full file contents for better accuracy").option("--verify", "second model pass that rejects unconfirmed findings (doubles cost)").option("--output <format>", "text | json | sarif");
+  return cmd.option("--provider <name>", "anthropic | openai | gemini").option("-m, --model <id>", "model id (defaults to the provider's recommended model)").option("--locale <lang>", "language for review output (e.g. Korean, English)").option("--exclude <patterns>", "comma-separated globs or substrings to skip (added to defaults)").option("--batch-chars <n>", "max diff characters per model request").option("--config <path>", "config file path (default: .pr-sage.json if present)").option("--min-severity <severity>", "drop findings below this severity").option("--fail-on <severity>", "exit 1 if any finding is at or above this severity").option("--context <mode>", "patch | full \u2014 send full file contents for better accuracy").option("--verify", "second model pass that rejects unconfirmed findings (doubles cost)").option("--paths <globs>", "only review files matching these comma-separated globs").option("--max-tokens <n>", "stop launching new batches once this many tokens are spent").option("--output <format>", "text | json | sarif");
 }
 async function resolveCommon(opts) {
   const config2 = await loadConfig(opts.config);
@@ -88424,11 +88553,13 @@ async function resolveCommon(opts) {
       ...config2.exclude ?? [],
       ...opts.exclude ? String(opts.exclude).split(",").map((s2) => s2.trim()) : []
     ],
+    paths: opts.paths ? String(opts.paths).split(",").map((s2) => s2.trim()).filter(Boolean) : config2.paths ?? [],
     batchCharBudget: Number(opts.batchChars ?? config2.batchChars ?? 8e4),
     minSeverity: parseSeverity(opts.minSeverity ?? config2.minSeverity, "--min-severity"),
     failOn: parseSeverity(opts.failOn ?? config2.failOn, "--fail-on"),
     context,
     verify: opts.verify ?? config2.verify ?? false,
+    maxTokens: opts.maxTokens ? Number(opts.maxTokens) : config2.maxTokensPerRun,
     output
   };
 }
@@ -88458,7 +88589,7 @@ function printResult(result, provider, output) {
   }
 }
 addSharedOptions(
-  program2.command("review").description("Review a pull request and post inline comments plus a summary").requiredOption("-p, --pr <number>", "pull request number").option("-r, --repo <owner/name>", "repository (defaults to $GITHUB_REPOSITORY)").option("--event <mode>", "comment | auto \u2014 auto approves or requests changes based on findings").option("--no-dedupe", "repost findings already commented by a previous pr-sage review").option("--no-incremental", "always review the full PR diff, not just new commits").option("--dry-run", "print the review to stdout instead of posting to GitHub")
+  program2.command("review").description("Review a pull request and post inline comments plus a summary").requiredOption("-p, --pr <number>", "pull request number").option("-r, --repo <owner/name>", "repository (defaults to $GITHUB_REPOSITORY)").option("--event <mode>", "comment | auto \u2014 auto approves or requests changes based on findings").option("--no-dedupe", "repost findings already commented by a previous pr-sage review").option("--no-incremental", "always review the full PR diff, not just new commits").option("--force", "review even draft/WIP/skip-labeled PRs").option("--dry-run", "print the review to stdout instead of posting to GitHub")
 ).action(async (opts) => {
   const prNumber = Number(opts.pr);
   if (!Number.isInteger(prNumber) || prNumber <= 0) {
@@ -88478,7 +88609,18 @@ addSharedOptions(
     const { owner, repo } = resolveRepo(opts.repo);
     const github = new GitHubClient(token, owner, repo, config2.githubApiUrl);
     console.error(`Fetching ${owner}/${repo}#${prNumber}...`);
-    const pr = await github.fetchPullRequest(prNumber);
+    let pr = await github.fetchPullRequest(prNumber);
+    if (!opts.force) {
+      const reason = skipReason(pr, config2);
+      if (reason) {
+        console.error(`Skipping review: ${reason}. (use --force to review anyway)`);
+        finish(false, void 0);
+      }
+    }
+    if (settings.paths.length > 0) {
+      pr = { ...pr, files: includeFiles(pr.files, settings.paths) };
+    }
+    const locale = resolveLocale(settings.locale, pr.title, pr.body);
     const history = dedupe ? await github.fetchPrSageHistory(prNumber) : null;
     if (!opts.dryRun && history?.lastReviewedSha === pr.headSha) {
       console.error(`Head commit ${pr.headSha.slice(0, 7)} was already reviewed; nothing to do.`);
@@ -88491,7 +88633,7 @@ addSharedOptions(
         const changed = await github.compareFiles(history.lastReviewedSha, pr.headSha);
         changedSinceLastReview = new Map(changed.map((f3) => [f3.path, f3.commentableLines]));
         const prPaths = new Set(pr.files.map((f3) => f3.path));
-        reviewFiles = changed.filter((f3) => prPaths.has(f3.path));
+        reviewFiles = includeFiles(changed, settings.paths).filter((f3) => prPaths.has(f3.path));
         console.error(
           `Incremental: ${reviewFiles.length} file(s) changed since ${history.lastReviewedSha.slice(0, 7)}.`
         );
@@ -88515,13 +88657,14 @@ addSharedOptions(
       headSha: pr.headSha
     };
     const { result } = await runReview(provider, target, {
-      locale: settings.locale,
+      locale,
       exclude: settings.exclude,
       batchCharBudget: settings.batchCharBudget,
       log: (msg) => console.error(msg),
       instructions,
       minSeverity: settings.minSeverity,
       verify: settings.verify,
+      maxTokens: settings.maxTokens,
       anchorFiles: pr.files,
       fetchContent: settings.context === "full" ? (path8) => github.fetchFileContent(path8, pr.headSha) : void 0
     });
@@ -88568,11 +88711,14 @@ addSharedOptions(
   try {
     const settings = await resolveCommon(opts);
     const { provider } = settings;
-    const files = await localDiffFiles(opts.base, Boolean(opts.staged));
+    let files = await localDiffFiles(opts.base, Boolean(opts.staged));
+    if (settings.paths.length > 0) files = includeFiles(files, settings.paths);
     if (files.length === 0) {
       console.error("No local changes to review.");
       finish(false, void 0);
     }
+    const lastCommitMsg = await promisify4(execFile3)("git", ["log", "-1", "--format=%B"]).then((r2) => r2.stdout).catch(() => "");
+    const locale = resolveLocale(settings.locale, lastCommitMsg);
     const instructions = await buildInstructions(settings.config, async () => {
       const parts = [];
       for (const path8 of ["CLAUDE.md", "CONTRIBUTING.md"]) {
@@ -88589,13 +88735,14 @@ ${content.slice(0, 6e3)}`);
       headSha: ""
     };
     const { result } = await runReview(provider, target, {
-      locale: settings.locale,
+      locale,
       exclude: settings.exclude,
       batchCharBudget: settings.batchCharBudget,
       log: (msg) => console.error(msg),
       instructions,
       minSeverity: settings.minSeverity,
       verify: settings.verify,
+      maxTokens: settings.maxTokens,
       fetchContent: settings.context === "full" ? (path8) => readFile3(path8, "utf8").catch(() => null) : void 0
     });
     reportUsage(provider);
@@ -88604,6 +88751,62 @@ ${content.slice(0, 6e3)}`);
     finish(gateTripped, settings.failOn);
   } catch (error51) {
     fail2(error51 instanceof Error ? error51.message : String(error51));
+  }
+});
+program2.command("init").description("Set up pr-sage in 30 seconds: config file + GitHub Action workflow").option("--provider <name>", "anthropic | openai | gemini | self-hosted").option("--locale <lang>", "auto | Korean | English | ...").option("--fail-on-critical", "block merges when a critical finding appears").option("-y, --yes", "accept defaults without prompting").action(async (opts) => {
+  const rl = readline2.createInterface({ input: process.stdin, output: process.stderr });
+  const ask = async (question, fallback) => {
+    if (opts.yes) return fallback;
+    const answer = (await rl.question(`${question} [${fallback}]: `)).trim();
+    return answer || fallback;
+  };
+  try {
+    const providerRaw = opts.provider ?? await ask("Provider? (anthropic / openai / gemini / self-hosted)", "anthropic");
+    const selfHosted = providerRaw === "self-hosted";
+    const provider = selfHosted ? "openai" : providerRaw;
+    if (!["anthropic", "openai", "gemini"].includes(provider)) {
+      fail2(`Unknown provider "${providerRaw}".`);
+    }
+    const locale = opts.locale ?? await ask("Review language? (auto detects from each PR)", "auto");
+    const failOnCritical = Boolean(opts.failOnCritical) || (await ask("Block merges on critical findings? (y/n)", "n")).toLowerCase().startsWith("y");
+    const answers = { provider, selfHosted, locale, failOnCritical };
+    if (existsSync(CONFIG_FILENAME)) {
+      console.error(`\u2713 ${CONFIG_FILENAME} already exists \u2014 leaving it untouched.`);
+    } else {
+      await writeFile2(CONFIG_FILENAME, buildConfig(answers));
+      console.error(`\u2713 Wrote ${CONFIG_FILENAME}`);
+    }
+    const inGitRepo = existsSync(".git");
+    const workflowPath = ".github/workflows/pr-sage.yml";
+    if (inGitRepo && !existsSync(workflowPath)) {
+      const wantWorkflow = (await ask("Create the GitHub Action workflow? (y/n)", "y")).toLowerCase().startsWith("y");
+      if (wantWorkflow) {
+        await mkdir3(".github/workflows", { recursive: true });
+        await writeFile2(workflowPath, buildWorkflow(answers));
+        console.error(`\u2713 Wrote ${workflowPath}`);
+      }
+    } else if (existsSync(workflowPath)) {
+      console.error(`\u2713 ${workflowPath} already exists \u2014 leaving it untouched.`);
+    }
+    const keyEnv = PROVIDER_KEY_ENV[provider];
+    if (selfHosted) {
+      console.error(
+        process.env.OPENAI_BASE_URL ? `\u2713 OPENAI_BASE_URL is set (${process.env.OPENAI_BASE_URL})` : "\u2717 OPENAI_BASE_URL is not set in this shell"
+      );
+    } else {
+      console.error(
+        process.env[keyEnv] ? `\u2713 ${keyEnv} is set in this shell` : `\u2717 ${keyEnv} is not set in this shell \u2014 the CLI needs it locally`
+      );
+    }
+    console.error(`
+${secretInstructions(answers, process.env.GITHUB_REPOSITORY)}`);
+    console.error(
+      "\nDone. Try it without posting anything:\n  npx pr-sage review --repo owner/name --pr <number> --dry-run"
+    );
+  } catch (error51) {
+    fail2(error51 instanceof Error ? error51.message : String(error51));
+  } finally {
+    rl.close();
   }
 });
 async function buildInstructions(config2, fetchGuidelines) {

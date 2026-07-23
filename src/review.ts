@@ -52,6 +52,8 @@ export interface ReviewOptions {
    * Used by incremental review: review a subset, anchor against the full PR diff.
    */
   anchorFiles?: DiffFile[];
+  /** Cost guard: stop launching new batches once this many tokens are spent. */
+  maxTokens?: number;
 }
 
 export const DEFAULT_EXCLUDES = [
@@ -66,6 +68,20 @@ export const DEFAULT_EXCLUDES = [
 ];
 
 const GLOB_CHARS = /[*?[\]{}()!]/;
+
+/** Keep only files matching at least one glob/substring (monorepo scoping). */
+export function includeFiles(files: DiffFile[], paths: string[]): DiffFile[] {
+  if (paths.length === 0) return files;
+  const matchers = paths.map((pattern) =>
+    GLOB_CHARS.test(pattern) ? picomatch(pattern, { dot: true }) : null,
+  );
+  return files.filter((f) =>
+    paths.some((pattern, i) => {
+      const matcher = matchers[i];
+      return matcher ? matcher(f.path) : f.path.includes(pattern);
+    }),
+  );
+}
 
 export function filterFiles(files: DiffFile[], exclude: string[]): DiffFile[] {
   const matchers = exclude.map((pattern) =>
@@ -187,8 +203,18 @@ export async function runReview(
   const system = systemPrompt(options.locale, options.instructions);
   const summaries: string[] = [];
   const findings: Finding[] = [];
+  const startTokens = spentTokens(provider);
+  let truncatedByBudget = false;
 
   for (const [i, batch] of batches.entries()) {
+    if (options.maxTokens !== undefined && spentTokens(provider) - startTokens >= options.maxTokens) {
+      const skipped = batches.length - i;
+      options.log(
+        `Token budget (${options.maxTokens}) reached — stopping before ${skipped} remaining batch(es).`,
+      );
+      truncatedByBudget = true;
+      break;
+    }
     if (batches.length > 1) options.log(`Batch ${i + 1}/${batches.length}: ${batch.length} file(s)`);
 
     let contents: Map<string, string> | undefined;
@@ -225,7 +251,10 @@ export async function runReview(
     findings.push(...batchFindings);
   }
 
-  const summaryBody = await consolidateSummaries(provider, summaries, options);
+  let summaryBody = await consolidateSummaries(provider, summaries, options);
+  if (truncatedByBudget) {
+    summaryBody += `\n\n> ⚠️ Review stopped early: the ${options.maxTokens}-token budget for this run was reached, so part of the diff was not reviewed.`;
+  }
 
   const { valid, dropped } = validateFindings(findings, options.anchorFiles ?? files);
   if (dropped.length > 0) {
@@ -245,6 +274,11 @@ export async function runReview(
     result: { summary: buildSummary(summaryBody, kept, provider, target.headSha), findings: kept },
     dropped,
   };
+}
+
+function spentTokens(provider: Provider): number {
+  const usage = provider.usage;
+  return usage ? usage.inputTokens + usage.outputTokens : 0;
 }
 
 async function verifyBatch(

@@ -247,6 +247,8 @@ var GitHubClient = class {
       baseRef: pr.base.ref,
       headRef: pr.head.ref,
       headSha: pr.head.sha,
+      draft: pr.draft ?? false,
+      labels: (pr.labels ?? []).map((l) => l.name),
       files
     };
   }
@@ -884,7 +886,17 @@ ${PR_SAGE_MARKER}`,
   const system = systemPrompt(options.locale, options.instructions);
   const summaries = [];
   const findings = [];
+  const startTokens = spentTokens(provider);
+  let truncatedByBudget = false;
   for (const [i, batch] of batches.entries()) {
+    if (options.maxTokens !== void 0 && spentTokens(provider) - startTokens >= options.maxTokens) {
+      const skipped = batches.length - i;
+      options.log(
+        `Token budget (${options.maxTokens}) reached \u2014 stopping before ${skipped} remaining batch(es).`
+      );
+      truncatedByBudget = true;
+      break;
+    }
     if (batches.length > 1) options.log(`Batch ${i + 1}/${batches.length}: ${batch.length} file(s)`);
     let contents;
     if (options.fetchContent) {
@@ -913,7 +925,12 @@ ${PR_SAGE_MARKER}`,
     summaries.push(result.summary);
     findings.push(...batchFindings);
   }
-  const summaryBody = await consolidateSummaries(provider, summaries, options);
+  let summaryBody = await consolidateSummaries(provider, summaries, options);
+  if (truncatedByBudget) {
+    summaryBody += `
+
+> \u26A0\uFE0F Review stopped early: the ${options.maxTokens}-token budget for this run was reached, so part of the diff was not reviewed.`;
+  }
   const { valid, dropped } = validateFindings(findings, options.anchorFiles ?? files);
   if (dropped.length > 0) {
     options.log(`Dropped ${dropped.length} finding(s) referencing lines outside the diff.`);
@@ -930,6 +947,10 @@ ${PR_SAGE_MARKER}`,
     result: { summary: buildSummary(summaryBody, kept, provider, target.headSha), findings: kept },
     dropped
   };
+}
+function spentTokens(provider) {
+  const usage = provider.usage;
+  return usage ? usage.inputTokens + usage.outputTokens : 0;
 }
 async function verifyBatch(provider, findings, filesText, log) {
   try {
@@ -1114,8 +1135,28 @@ var configSchema = z2.strictObject({
   /** Inject repo guideline docs (CLAUDE.md, CONTRIBUTING.md) into the prompt (default true). */
   repoContext: z2.boolean().optional(),
   /** GitHub API base URL for GitHub Enterprise (default: $GITHUB_API_URL or api.github.com). */
-  githubApiUrl: z2.string().optional()
+  githubApiUrl: z2.string().optional(),
+  /** Only review files matching these globs (monorepo scoping). */
+  paths: z2.array(z2.string()).optional(),
+  /** Skip PRs carrying any of these labels (default: ["skip-review", "no-review"]). */
+  skipLabels: z2.array(z2.string()).optional(),
+  /** Skip draft PRs (default true). */
+  skipDraft: z2.boolean().optional(),
+  /** Skip PRs whose title starts with WIP (default true). */
+  skipWip: z2.boolean().optional(),
+  /** Abort the run once this many total LLM tokens have been spent (cost guard). */
+  maxTokensPerRun: z2.number().int().positive().optional()
 });
+function skipReason(pr, config) {
+  if ((config.skipDraft ?? true) && pr.draft) return "PR is a draft";
+  if ((config.skipWip ?? true) && /^\s*(\[wip\]|wip\b[:\s-]?)/i.test(pr.title)) {
+    return "PR title is marked WIP";
+  }
+  const skipLabels = config.skipLabels ?? ["skip-review", "no-review"];
+  const hit = pr.labels.find((label) => skipLabels.includes(label));
+  if (hit) return `PR carries the "${hit}" label`;
+  return null;
+}
 var CONFIG_FILENAME = ".pr-sage.json";
 async function loadConfig(explicitPath) {
   const file = resolve(explicitPath ?? CONFIG_FILENAME);
@@ -1139,6 +1180,78 @@ async function loadConfig(explicitPath) {
   }
   return parsed.data;
 }
+
+// src/locale.ts
+function resolveLocale(locale, ...samples) {
+  if (locale !== "auto") return locale;
+  const text = samples.filter(Boolean).join(" ");
+  if (/[가-힣]/.test(text)) return "Korean";
+  if (/[぀-ヿ]/.test(text)) return "Japanese";
+  if (/[一-鿿]/.test(text)) return "Chinese";
+  return "English";
+}
+
+// src/init.ts
+var PROVIDER_KEY_ENV = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  gemini: "GEMINI_API_KEY"
+};
+var ACTION_KEY_INPUT = {
+  anthropic: "anthropic-api-key",
+  openai: "openai-api-key",
+  gemini: "gemini-api-key"
+};
+function buildConfig(answers) {
+  const config = {
+    provider: answers.provider,
+    locale: answers.locale
+  };
+  if (answers.failOnCritical) config.failOn = "critical";
+  return `${JSON.stringify(config, null, 2)}
+`;
+}
+function buildWorkflow(answers) {
+  const keyEnv = PROVIDER_KEY_ENV[answers.provider];
+  const keyInput = ACTION_KEY_INPUT[answers.provider];
+  return `name: AI Review
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Secrets are unavailable on forked PRs; skip instead of failing.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: Kyeom1997/pr-sage@v1
+        with:
+          provider: ${answers.provider}
+          ${keyInput}: \${{ secrets.${keyEnv} }}
+          locale: ${answers.locale}${answers.failOnCritical ? "\n          fail-on: critical" : ""}
+`;
+}
+function secretInstructions(answers, repo) {
+  const keyEnv = PROVIDER_KEY_ENV[answers.provider];
+  const repoFlag = repo ? ` --repo ${repo}` : "";
+  if (answers.selfHosted) {
+    return [
+      "Self-hosted endpoint: no API key secret needed.",
+      "Set OPENAI_BASE_URL where pr-sage runs, e.g.:",
+      "  OPENAI_BASE_URL=http://localhost:11434/v1"
+    ].join("\n");
+  }
+  return [
+    `Register your ${keyEnv} as a repository secret so the Action can use it:`,
+    `  gh secret set ${keyEnv}${repoFlag}`,
+    "(paste the key when prompted \u2014 never commit it)"
+  ].join("\n");
+}
 export {
   CONFIG_FILENAME,
   DEFAULT_EXCLUDES,
@@ -1147,6 +1260,8 @@ export {
   SEVERITIES,
   annotatePatch,
   batchFiles,
+  buildConfig,
+  buildWorkflow,
   commentableLines,
   createProvider,
   filterFiles,
@@ -1158,11 +1273,14 @@ export {
   parseSummary,
   parseUnifiedDiff,
   parseVerdicts,
+  resolveLocale,
   resolveRepo,
   runReview,
   sanitizeFindings,
+  secretInstructions,
   severityAtLeast,
   shaMarker,
+  skipReason,
   toJson,
   toSarif,
   validateFindings,
