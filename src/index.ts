@@ -29,6 +29,8 @@ export {
 export { commentableLines, annotatePatch, validateFindings } from "./diff.js";
 export { parseUnifiedDiff, localDiffFiles } from "./localdiff.js";
 export { toJson, toSarif, type OutputFormat } from "./output.js";
-export { loadConfig, CONFIG_FILENAME, type PrSageConfig } from "./config.js";
+export { loadConfig, skipReason, CONFIG_FILENAME, type PrSageConfig } from "./config.js";
+export { resolveLocale } from "./locale.js";
+export { buildConfig, buildWorkflow, secretInstructions, type InitAnswers } from "./init.js";
 export { parseReviewResult, parseVerdicts, parseSummary } from "./validate.js";
 export { withRetry, isRetryable } from "./retry.js";

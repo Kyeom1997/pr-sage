@@ -42,6 +42,8 @@ interface PullRequestInfo {
     baseRef: string;
     headRef: string;
     headSha: string;
+    draft: boolean;
+    labels: string[];
     files: DiffFile[];
 }
 type ProviderName = "anthropic" | "openai" | "gemini";
@@ -137,6 +139,8 @@ interface ReviewOptions {
      * Used by incremental review: review a subset, anchor against the full PR diff.
      */
     anchorFiles?: DiffFile[];
+    /** Cost guard: stop launching new batches once this many tokens are spent. */
+    maxTokens?: number;
 }
 declare const DEFAULT_EXCLUDES: string[];
 declare function filterFiles(files: DiffFile[], exclude: string[]): DiffFile[];
@@ -225,10 +229,39 @@ declare const configSchema: z.ZodObject<{
     }>>;
     repoContext: z.ZodOptional<z.ZodBoolean>;
     githubApiUrl: z.ZodOptional<z.ZodString>;
+    paths: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    skipLabels: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    skipDraft: z.ZodOptional<z.ZodBoolean>;
+    skipWip: z.ZodOptional<z.ZodBoolean>;
+    maxTokensPerRun: z.ZodOptional<z.ZodNumber>;
 }, z.core.$strict>;
 type PrSageConfig = z.infer<typeof configSchema>;
+/** Returns a human-readable reason when the PR shouldn't be reviewed, else null. */
+declare function skipReason(pr: {
+    draft: boolean;
+    title: string;
+    labels: string[];
+}, config: PrSageConfig): string | null;
 declare const CONFIG_FILENAME = ".pr-sage.json";
 declare function loadConfig(explicitPath?: string): Promise<PrSageConfig>;
+
+/**
+ * Resolve `"auto"` locale from sample text (PR title/body, commit messages).
+ * Detection is script-based and deliberately coarse — when nothing matches,
+ * English is the safe default.
+ */
+declare function resolveLocale(locale: string, ...samples: Array<string | undefined>): string;
+
+interface InitAnswers {
+    provider: ProviderName;
+    /** True when the user picked a self-hosted OpenAI-compatible endpoint. */
+    selfHosted: boolean;
+    locale: string;
+    failOnCritical: boolean;
+}
+declare function buildConfig(answers: InitAnswers): string;
+declare function buildWorkflow(answers: InitAnswers): string;
+declare function secretInstructions(answers: InitAnswers, repo?: string): string;
 
 declare function parseVerdicts(raw: unknown): Array<{
     index: number;
@@ -251,4 +284,4 @@ interface RetryOptions {
 /** Retry `fn` on rate-limit/overload errors with exponential backoff + jitter. */
 declare function withRetry<T>(fn: () => Promise<T>, { retries, baseDelayMs, log }?: RetryOptions): Promise<T>;
 
-export { CONFIG_FILENAME, DEFAULT_EXCLUDES, type DiffFile, type Finding, GitHubClient, type OutputFormat, PR_SAGE_MARKER, type PrSageConfig, type Provider, type ProviderName, type PullRequestInfo, type ReviewEvent, type ReviewOptions, type ReviewResult, type ReviewTarget, SEVERITIES, type Severity, annotatePatch, batchFiles, commentableLines, createProvider, filterFiles, formatComment, isRetryable, loadConfig, localDiffFiles, parseReviewResult, parseSummary, parseUnifiedDiff, parseVerdicts, resolveRepo, runReview, sanitizeFindings, severityAtLeast, shaMarker, toJson, toSarif, validateFindings, withRetry };
+export { CONFIG_FILENAME, DEFAULT_EXCLUDES, type DiffFile, type Finding, GitHubClient, type InitAnswers, type OutputFormat, PR_SAGE_MARKER, type PrSageConfig, type Provider, type ProviderName, type PullRequestInfo, type ReviewEvent, type ReviewOptions, type ReviewResult, type ReviewTarget, SEVERITIES, type Severity, annotatePatch, batchFiles, buildConfig, buildWorkflow, commentableLines, createProvider, filterFiles, formatComment, isRetryable, loadConfig, localDiffFiles, parseReviewResult, parseSummary, parseUnifiedDiff, parseVerdicts, resolveLocale, resolveRepo, runReview, sanitizeFindings, secretInstructions, severityAtLeast, shaMarker, skipReason, toJson, toSarif, validateFindings, withRetry };

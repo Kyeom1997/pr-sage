@@ -1,12 +1,24 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import * as readline from "node:readline/promises";
 import { Command } from "commander";
 import { GitHubClient, resolveRepo, formatComment, findingFingerprint } from "./github.js";
 import { createProvider } from "./providers/index.js";
-import { DEFAULT_EXCLUDES, runReview, type ReviewTarget } from "./review.js";
-import { loadConfig, type PrSageConfig } from "./config.js";
+import { DEFAULT_EXCLUDES, includeFiles, runReview, type ReviewTarget } from "./review.js";
+import { loadConfig, skipReason, CONFIG_FILENAME, type PrSageConfig } from "./config.js";
 import { localDiffFiles } from "./localdiff.js";
+import { resolveLocale } from "./locale.js";
+import {
+  buildConfig,
+  buildWorkflow,
+  secretInstructions,
+  PROVIDER_KEY_ENV,
+  type InitAnswers,
+} from "./init.js";
 import { toJson, toSarif, type OutputFormat } from "./output.js";
 import {
   SEVERITIES,
@@ -40,6 +52,8 @@ function addSharedOptions(cmd: Command): Command {
     .option("--fail-on <severity>", "exit 1 if any finding is at or above this severity")
     .option("--context <mode>", "patch | full — send full file contents for better accuracy")
     .option("--verify", "second model pass that rejects unconfirmed findings (doubles cost)")
+    .option("--paths <globs>", "only review files matching these comma-separated globs")
+    .option("--max-tokens <n>", "stop launching new batches once this many tokens are spent")
     .option("--output <format>", "text | json | sarif");
 }
 
@@ -49,11 +63,13 @@ interface CommonSettings {
   provider: Provider;
   locale: string;
   exclude: string[];
+  paths: string[];
   batchCharBudget: number;
   minSeverity?: Severity;
   failOn?: Severity;
   context: "patch" | "full";
   verify: boolean;
+  maxTokens?: number;
   output: OutputFormat;
 }
 
@@ -83,11 +99,17 @@ async function resolveCommon(opts: Record<string, unknown>): Promise<CommonSetti
       ...(config.exclude ?? []),
       ...(opts.exclude ? String(opts.exclude).split(",").map((s) => s.trim()) : []),
     ],
+    paths: opts.paths
+      ? String(opts.paths).split(",").map((s) => s.trim()).filter(Boolean)
+      : (config.paths ?? []),
     batchCharBudget: Number(opts.batchChars ?? config.batchChars ?? 80_000),
     minSeverity: parseSeverity((opts.minSeverity as string) ?? config.minSeverity, "--min-severity"),
     failOn: parseSeverity((opts.failOn as string) ?? config.failOn, "--fail-on"),
     context,
     verify: (opts.verify as boolean | undefined) ?? config.verify ?? false,
+    maxTokens: opts.maxTokens
+      ? Number(opts.maxTokens)
+      : config.maxTokensPerRun,
     output,
   };
 }
@@ -128,6 +150,7 @@ addSharedOptions(
     .option("--event <mode>", "comment | auto — auto approves or requests changes based on findings")
     .option("--no-dedupe", "repost findings already commented by a previous pr-sage review")
     .option("--no-incremental", "always review the full PR diff, not just new commits")
+    .option("--force", "review even draft/WIP/skip-labeled PRs")
     .option("--dry-run", "print the review to stdout instead of posting to GitHub"),
 ).action(async (opts) => {
   const prNumber = Number(opts.pr);
@@ -153,7 +176,19 @@ addSharedOptions(
     const github = new GitHubClient(token!, owner, repo, config.githubApiUrl);
 
     console.error(`Fetching ${owner}/${repo}#${prNumber}...`);
-    const pr = await github.fetchPullRequest(prNumber);
+    let pr = await github.fetchPullRequest(prNumber);
+
+    if (!opts.force) {
+      const reason = skipReason(pr, config);
+      if (reason) {
+        console.error(`Skipping review: ${reason}. (use --force to review anyway)`);
+        finish(false, undefined);
+      }
+    }
+    if (settings.paths.length > 0) {
+      pr = { ...pr, files: includeFiles(pr.files, settings.paths) };
+    }
+    const locale = resolveLocale(settings.locale, pr.title, pr.body);
 
     const history = dedupe ? await github.fetchPrSageHistory(prNumber) : null;
     if (!opts.dryRun && history?.lastReviewedSha === pr.headSha) {
@@ -170,7 +205,7 @@ addSharedOptions(
         const changed = await github.compareFiles(history.lastReviewedSha, pr.headSha);
         changedSinceLastReview = new Map(changed.map((f) => [f.path, f.commentableLines]));
         const prPaths = new Set(pr.files.map((f) => f.path));
-        reviewFiles = changed.filter((f) => prPaths.has(f.path));
+        reviewFiles = includeFiles(changed, settings.paths).filter((f) => prPaths.has(f.path));
         console.error(
           `Incremental: ${reviewFiles.length} file(s) changed since ${history.lastReviewedSha.slice(0, 7)}.`,
         );
@@ -195,13 +230,14 @@ addSharedOptions(
       headSha: pr.headSha,
     };
     const { result } = await runReview(provider, target, {
-      locale: settings.locale,
+      locale,
       exclude: settings.exclude,
       batchCharBudget: settings.batchCharBudget,
       log: (msg) => console.error(msg),
       instructions,
       minSeverity: settings.minSeverity,
       verify: settings.verify,
+      maxTokens: settings.maxTokens,
       anchorFiles: pr.files,
       fetchContent:
         settings.context === "full"
@@ -266,11 +302,18 @@ addSharedOptions(
     const settings = await resolveCommon(opts);
     const { provider } = settings;
 
-    const files = await localDiffFiles(opts.base, Boolean(opts.staged));
+    let files = await localDiffFiles(opts.base, Boolean(opts.staged));
+    if (settings.paths.length > 0) files = includeFiles(files, settings.paths);
     if (files.length === 0) {
       console.error("No local changes to review.");
       finish(false, undefined);
     }
+
+    // For locale "auto" the best local sample is the latest commit message.
+    const lastCommitMsg = await promisify(execFile)("git", ["log", "-1", "--format=%B"])
+      .then((r) => r.stdout)
+      .catch(() => "");
+    const locale = resolveLocale(settings.locale, lastCommitMsg);
 
     const instructions = await buildInstructions(settings.config, async () => {
       const parts: string[] = [];
@@ -288,13 +331,14 @@ addSharedOptions(
       headSha: "",
     };
     const { result } = await runReview(provider, target, {
-      locale: settings.locale,
+      locale,
       exclude: settings.exclude,
       batchCharBudget: settings.batchCharBudget,
       log: (msg) => console.error(msg),
       instructions,
       minSeverity: settings.minSeverity,
       verify: settings.verify,
+      maxTokens: settings.maxTokens,
       fetchContent:
         settings.context === "full"
           ? (path) => readFile(path, "utf8").catch(() => null)
@@ -311,6 +355,85 @@ addSharedOptions(
     fail(error instanceof Error ? error.message : String(error));
   }
 });
+
+program
+  .command("init")
+  .description("Set up pr-sage in 30 seconds: config file + GitHub Action workflow")
+  .option("--provider <name>", "anthropic | openai | gemini | self-hosted")
+  .option("--locale <lang>", "auto | Korean | English | ...")
+  .option("--fail-on-critical", "block merges when a critical finding appears")
+  .option("-y, --yes", "accept defaults without prompting")
+  .action(async (opts) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+    const ask = async (question: string, fallback: string): Promise<string> => {
+      if (opts.yes) return fallback;
+      const answer = (await rl.question(`${question} [${fallback}]: `)).trim();
+      return answer || fallback;
+    };
+
+    try {
+      const providerRaw = (opts.provider as string | undefined)
+        ?? (await ask("Provider? (anthropic / openai / gemini / self-hosted)", "anthropic"));
+      const selfHosted = providerRaw === "self-hosted";
+      const provider = (selfHosted ? "openai" : providerRaw) as ProviderName;
+      if (!["anthropic", "openai", "gemini"].includes(provider)) {
+        fail(`Unknown provider "${providerRaw}".`);
+      }
+
+      const locale = (opts.locale as string | undefined)
+        ?? (await ask("Review language? (auto detects from each PR)", "auto"));
+      const failOnCritical = Boolean(opts.failOnCritical)
+        || (await ask("Block merges on critical findings? (y/n)", "n")).toLowerCase().startsWith("y");
+
+      const answers: InitAnswers = { provider, selfHosted, locale, failOnCritical };
+
+      if (existsSync(CONFIG_FILENAME)) {
+        console.error(`✓ ${CONFIG_FILENAME} already exists — leaving it untouched.`);
+      } else {
+        await writeFile(CONFIG_FILENAME, buildConfig(answers));
+        console.error(`✓ Wrote ${CONFIG_FILENAME}`);
+      }
+
+      const inGitRepo = existsSync(".git");
+      const workflowPath = ".github/workflows/pr-sage.yml";
+      if (inGitRepo && !existsSync(workflowPath)) {
+        const wantWorkflow = (await ask("Create the GitHub Action workflow? (y/n)", "y"))
+          .toLowerCase()
+          .startsWith("y");
+        if (wantWorkflow) {
+          await mkdir(".github/workflows", { recursive: true });
+          await writeFile(workflowPath, buildWorkflow(answers));
+          console.error(`✓ Wrote ${workflowPath}`);
+        }
+      } else if (existsSync(workflowPath)) {
+        console.error(`✓ ${workflowPath} already exists — leaving it untouched.`);
+      }
+
+      const keyEnv = PROVIDER_KEY_ENV[provider];
+      if (selfHosted) {
+        console.error(
+          process.env.OPENAI_BASE_URL
+            ? `✓ OPENAI_BASE_URL is set (${process.env.OPENAI_BASE_URL})`
+            : "✗ OPENAI_BASE_URL is not set in this shell",
+        );
+      } else {
+        console.error(
+          process.env[keyEnv]
+            ? `✓ ${keyEnv} is set in this shell`
+            : `✗ ${keyEnv} is not set in this shell — the CLI needs it locally`,
+        );
+      }
+
+      console.error(`\n${secretInstructions(answers, process.env.GITHUB_REPOSITORY)}`);
+      console.error(
+        "\nDone. Try it without posting anything:\n  npx pr-sage review --repo owner/name --pr <number> --dry-run",
+      );
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    } finally {
+      rl.close();
+    }
+  });
 
 async function buildInstructions(
   config: PrSageConfig,

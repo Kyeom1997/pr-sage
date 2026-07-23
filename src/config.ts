@@ -32,9 +32,34 @@ const configSchema = z.strictObject({
   repoContext: z.boolean().optional(),
   /** GitHub API base URL for GitHub Enterprise (default: $GITHUB_API_URL or api.github.com). */
   githubApiUrl: z.string().optional(),
+  /** Only review files matching these globs (monorepo scoping). */
+  paths: z.array(z.string()).optional(),
+  /** Skip PRs carrying any of these labels (default: ["skip-review", "no-review"]). */
+  skipLabels: z.array(z.string()).optional(),
+  /** Skip draft PRs (default true). */
+  skipDraft: z.boolean().optional(),
+  /** Skip PRs whose title starts with WIP (default true). */
+  skipWip: z.boolean().optional(),
+  /** Abort the run once this many total LLM tokens have been spent (cost guard). */
+  maxTokensPerRun: z.number().int().positive().optional(),
 });
 
 export type PrSageConfig = z.infer<typeof configSchema>;
+
+/** Returns a human-readable reason when the PR shouldn't be reviewed, else null. */
+export function skipReason(
+  pr: { draft: boolean; title: string; labels: string[] },
+  config: PrSageConfig,
+): string | null {
+  if ((config.skipDraft ?? true) && pr.draft) return "PR is a draft";
+  if ((config.skipWip ?? true) && /^\s*(\[wip\]|wip\b[:\s-]?)/i.test(pr.title)) {
+    return "PR title is marked WIP";
+  }
+  const skipLabels = config.skipLabels ?? ["skip-review", "no-review"];
+  const hit = pr.labels.find((label) => skipLabels.includes(label));
+  if (hit) return `PR carries the "${hit}" label`;
+  return null;
+}
 
 export const CONFIG_FILENAME = ".pr-sage.json";
 

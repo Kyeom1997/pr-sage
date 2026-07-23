@@ -47,6 +47,8 @@ export interface PullRequestInfo {
   baseRef: string;
   headRef: string;
   headSha: string;
+  draft: boolean;
+  labels: string[];
   files: DiffFile[];
 }
 

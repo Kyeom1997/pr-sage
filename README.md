@@ -2,6 +2,8 @@
 
 **An AI PR reviewer built to eliminate review noise — not add to it.**
 
+![pr-sage demo: incremental review with dedup, posting an inline suggestion to a PR](docs/demo.gif)
+
 Most AI reviewers re-review the whole PR on every push and repeat themselves until the team mutes them. pr-sage is designed around the opposite goal: say each thing once, follow your team's rules, and stay silent when there is nothing new to say.
 
 - 🔇 **Zero duplicate comments.** Findings carry content fingerprints — a line shift won't make the same comment appear twice, and re-runs post nothing when nothing changed.
@@ -13,7 +15,15 @@ Most AI reviewers re-review the whole PR on every push and repeat themselves unt
 
 Ships as a **CLI**, a **GitHub Action**, and a **TypeScript library**.
 
-## Quick start (CLI)
+## Quick start
+
+The fastest path — an interactive wizard that writes your config and the GitHub Action workflow, and tells you exactly which secret to register:
+
+```bash
+npx pr-sage init
+```
+
+Or by hand (CLI):
 
 ```bash
 export GITHUB_TOKEN=ghp_...
@@ -50,7 +60,10 @@ npx pr-sage review --repo owner/name --pr 123 --provider openai --locale Korean
 | `-r, --repo <owner/name>` | `$GITHUB_REPOSITORY` | Target repository |
 | `--provider <name>` | `anthropic` | `anthropic` \| `openai` \| `gemini` |
 | `-m, --model <id>` | provider default | Model id (`claude-opus-4-8`, `gpt-5`, `gemini-flash-latest`) |
-| `--locale <lang>` | `English` | Language for the review output |
+| `--locale <lang>` | `English` | Language for the review output; `auto` detects it from the PR title/body |
+| `--paths <globs>` | — | Only review files matching these comma-separated globs (monorepo scoping) |
+| `--max-tokens <n>` | — | Cost guard: stop launching new batches once this many tokens are spent |
+| `--force` | — | Review even draft, WIP-titled, or `skip-review`-labeled PRs (skipped by default) |
 | `--exclude <patterns>` | — | Comma-separated globs or substrings to skip (added to defaults: lockfiles, `dist/`, `build/`, …) |
 | `--min-severity <sev>` | — | Drop findings below this severity (e.g. `suggestion` hides nitpicks) |
 | `--fail-on <sev>` | — | Exit 1 if any finding is at or above this severity — use as a CI quality gate |
@@ -89,11 +102,14 @@ Put a `.pr-sage.json` in the directory you run from (CLI flags override it):
 ```json
 {
   "provider": "anthropic",
-  "locale": "Korean",
+  "locale": "auto",
   "exclude": ["src/generated/**", "**/*.snap"],
+  "paths": ["packages/web/**"],
   "minSeverity": "suggestion",
   "failOn": "critical",
   "context": "full",
+  "maxTokensPerRun": 200000,
+  "skipLabels": ["skip-review"],
   "instructions": "We use Result<T, E> for error handling — flag thrown exceptions in domain code. Prefer early returns over nested conditionals."
 }
 ```
